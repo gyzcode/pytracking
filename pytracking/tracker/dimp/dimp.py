@@ -103,9 +103,11 @@ class DiMP(BaseTracker):
         # ------- LOCALIZATION ------- #
 
         # Extract backbone features
+        # need speed up __________________________________________________________________________________________________
         backbone_feat, sample_coords, im_patches = self.extract_backbone_features(im, self.get_centered_sample_pos(),
                                                                       self.target_scale * self.params.scale_factors,
                                                                       self.img_sample_sz)
+        # need speed up __________________________________________________________________________________________________                                                                      
         # Extract classification features
         test_x = self.get_classification_features(backbone_feat)
 
@@ -125,10 +127,11 @@ class DiMP(BaseTracker):
                 update_scale_flag = self.params.get('update_scale_when_uncertain', True) or flag != 'uncertain'
                 if self.params.get('use_classifier', True):
                     self.update_state(new_pos)
+                # need speed up __________________________________________________________________________________________________
                 self.refine_target_box(backbone_feat, sample_pos[scale_ind,:], sample_scales[scale_ind], scale_ind, update_scale_flag)
+                # need speed up __________________________________________________________________________________________________
             elif self.params.get('use_classifier', True):
                 self.update_state(new_pos, sample_scales[scale_ind])
-
 
         # ------- UPDATE ------- #
 

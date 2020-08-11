@@ -5,6 +5,7 @@ from pathlib import Path
 import importlib
 import inspect
 import ltr.admin.settings as ws_settings
+import onnx
 
 
 def load_trained_network(workspace_dir, network_path, checkpoint=None):
@@ -100,6 +101,24 @@ def load_network(network_dir=None, checkpoint=None, constructor_fun_name=None, c
         raise RuntimeError('No constructor for the given network.')
 
     net.load_state_dict(checkpoint_dict['net'])
+
+    # convert from pth to onnx-------------------------------------------------------------------------------
+    print('convert from pth to onnx')
+    onnx_path = 'dimp50.onnx'
+    dummy_input = torch.randn(1, 3, 288, 288)
+    input_names = ['input']
+    output_names = ['output']
+    torch.onnx.export(net.feature_extractor, dummy_input, onnx_path, verbose=True, input_names=input_names, output_names=output_names)
+    print('done.')
+
+    onnx_model = onnx.load(onnx_path)
+    # onnx.checker.check_model(onnx_model)
+    # print(onnx.helper.printable_graph(onnx_model.graph))
+    intermediate_layer_value_info = onnx.helper.make_tensor_value_info('411', onnx.TensorProto.FLOAT, [1, 256, 18, 18])
+    onnx_model.graph.output.append(intermediate_layer_value_info)
+    onnx.save(onnx_model, 'test.onnx')
+
+    # convert from pth to onnx-------------------------------------------------------------------------------
 
     net.constructor = checkpoint_dict['constructor']
     if 'net_info' in checkpoint_dict and checkpoint_dict['net_info'] is not None:
