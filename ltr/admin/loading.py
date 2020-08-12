@@ -114,9 +114,12 @@ def load_network(network_dir=None, checkpoint=None, constructor_fun_name=None, c
     onnx_model = onnx.load(onnx_path)
     # onnx.checker.check_model(onnx_model)
     # print(onnx.helper.printable_graph(onnx_model.graph))
-    intermediate_layer_value_info = onnx.helper.make_tensor_value_info('411', onnx.TensorProto.FLOAT, [1, 256, 18, 18])
+    del onnx_model.graph.output[0]
+    intermediate_layer_value_info = onnx.helper.make_tensor_value_info('398', onnx.TensorProto.FLOAT, [1, 512, 36, 36])
     onnx_model.graph.output.append(intermediate_layer_value_info)
-    onnx.save(onnx_model, 'test.onnx')
+    intermediate_layer_value_info = onnx.helper.make_tensor_value_info('460', onnx.TensorProto.FLOAT, [1, 1024, 18, 18])
+    onnx_model.graph.output.append(intermediate_layer_value_info)
+    onnx.save(onnx_model, 'dimp50_output.onnx')
 
     # convert from pth to onnx-------------------------------------------------------------------------------
 
