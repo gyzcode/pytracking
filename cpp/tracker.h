@@ -33,7 +33,8 @@ private:
     int outputByteSize;
 
     cudaStream_t m_stream;
-    Tensor m_zFeat;
+    Tensor m_zFeat1;
+    Tensor m_zFeat2;
     Tensor m_xFeat;
     vector<void*> mDeviceBindings;
 

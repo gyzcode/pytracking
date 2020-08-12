@@ -48,7 +48,8 @@ Tracker::Tracker()
     mHannWindow /= mHannWindow.sum();
     mHannWindow *= 0.176;
 
-    m_zFeat = at::zeros({1 ,256 ,6 , 6}, kFloat32).to(kCUDA);
+    m_zFeat1 = at::zeros({1 ,512 ,36 , 36}, kFloat32).to(kCUDA);
+    m_zFeat2 = at::zeros({1 ,1024 ,18 , 18}, kFloat32).to(kCUDA);
     m_xFeat = at::zeros({3 ,256 ,22 , 22}, kFloat32).to(kCUDA);
 
     cudaStreamCreate(&m_stream);
@@ -101,22 +102,20 @@ void Tracker::Init(const Mat& img, const Rect2d& roi)
     PreProcess(img, tz, roi, m_zSize, 127);
 
     // allocate buffers
-    Dims inputDims = mEngine->getProfileDimensions(0, 0, OptProfileSelector::kMIN);
-    mContext->setBindingDimensions(0, inputDims);
-    Dims outputDims = mContext->getBindingDimensions(1);
+    Dims inputDims = mEngine->getProfileDimensions(0, 0, OptProfileSelector::kOPT);
+    // mContext->setBindingDimensions(0, inputDims);
+    Dims outputDims1 = mContext->getBindingDimensions(1);
+    Dims outputDims2 = mContext->getBindingDimensions(2);
  
     mDeviceBindings.clear();
     mDeviceBindings.emplace_back(tz.data_ptr());
-    mDeviceBindings.emplace_back(m_zFeat.data_ptr());
+    mDeviceBindings.emplace_back(m_zFeat1.data_ptr());
+    mDeviceBindings.emplace_back(m_zFeat2.data_ptr());
 
     // Asynchronously enqueue the inference work
     mContext->enqueueV2(mDeviceBindings.data(), m_stream, nullptr);
     // Wait for the work in the m_stream to complete
     cudaStreamSynchronize(m_stream);
-
-    inputDims = mEngine->getProfileDimensions(0, 0, OptProfileSelector::kMAX);
-    mContext->setBindingDimensions(0, inputDims);
-    outputDims = mContext->getBindingDimensions(1);
 
     mDeviceBindings[1] = m_xFeat.data_ptr();
 }
@@ -140,7 +139,7 @@ void Tracker::Update(const Mat& img, Rect2d& roi)
     // TickMeter tm;
     // tm.start();
     // cross correlation
-    Tensor response = F::conv2d(m_xFeat, m_zFeat);
+    Tensor response = F::conv2d(m_xFeat, m_zFeat1);
     // cudaDeviceSynchronize();
     // tm.stop();
     // cout << tm.getTimeMilli() << endl;
