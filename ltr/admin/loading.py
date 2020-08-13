@@ -102,8 +102,8 @@ def load_network(network_dir=None, checkpoint=None, constructor_fun_name=None, c
 
     net.load_state_dict(checkpoint_dict['net'])
 
-    # # convert from pth to onnx-------------------------------------------------------------------------------
-    # print('convert from pth to onnx')
+    # # convert dimp50 from pth to onnx-------------------------------------------------------------------------------
+    # print('convert dimp50 from pth to onnx')
     # input_names = ['input']
     # output_names = ['output']
 
@@ -132,7 +132,39 @@ def load_network(network_dir=None, checkpoint=None, constructor_fun_name=None, c
     # onnx.save(onnx_model, 'dimp50_test_output.onnx')
 
     # print('done.')
-    # # convert from pth to onnx-------------------------------------------------------------------------------
+    # # convert dimp50 from pth to onnx-------------------------------------------------------------------------------
+
+    # convert dimp18 from pth to onnx-------------------------------------------------------------------------------
+    print('convert dimp18 from pth to onnx')
+    input_names = ['input']
+    output_names = ['output']
+
+    onnx_path = 'dimp18_training.onnx'
+    dummy_input = torch.randn(13, 3, 288, 288)
+    torch.onnx.export(net.feature_extractor, dummy_input, onnx_path, verbose=True, input_names=input_names, output_names=output_names)
+
+    onnx_path = 'dimp18_test.onnx'
+    dummy_input = torch.randn(1, 3, 288, 288)
+    torch.onnx.export(net.feature_extractor, dummy_input, onnx_path, verbose=True, input_names=input_names, output_names=output_names)
+
+    onnx_model = onnx.load('dimp18_training.onnx')
+    del onnx_model.graph.output[0]
+    intermediate_layer_value_info = onnx.helper.make_tensor_value_info('159', onnx.TensorProto.FLOAT, [13, 128, 36, 36])
+    onnx_model.graph.output.append(intermediate_layer_value_info)
+    intermediate_layer_value_info = onnx.helper.make_tensor_value_info('172', onnx.TensorProto.FLOAT, [13, 256, 18, 18])
+    onnx_model.graph.output.append(intermediate_layer_value_info)
+    onnx.save(onnx_model, 'dimp18_training_output.onnx')
+
+    onnx_model = onnx.load('dimp18_test.onnx')
+    del onnx_model.graph.output[0]
+    intermediate_layer_value_info = onnx.helper.make_tensor_value_info('159', onnx.TensorProto.FLOAT, [1, 128, 36, 36])
+    onnx_model.graph.output.append(intermediate_layer_value_info)
+    intermediate_layer_value_info = onnx.helper.make_tensor_value_info('172', onnx.TensorProto.FLOAT, [1, 256, 18, 18])
+    onnx_model.graph.output.append(intermediate_layer_value_info)
+    onnx.save(onnx_model, 'dimp18_test_output.onnx')
+
+    print('done.')
+    # convert dimp18 from pth to onnx-------------------------------------------------------------------------------
 
     net.constructor = checkpoint_dict['constructor']
     if 'net_info' in checkpoint_dict and checkpoint_dict['net_info'] is not None:
