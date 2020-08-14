@@ -22,9 +22,8 @@ def sample_patch_transformed(im, pos, scale, image_sz, transforms, is_mask=False
     """
 
     # Get image patche
-    im_patch, _ = sample_patch(im, pos, scale*image_sz, image_sz, is_mask=is_mask)
-    plt.imshow(im_patch[0].permute(1, 2, 0).int())
-    plt.show()
+    # im_patch, _ = sample_patch(im, pos, scale*image_sz, image_sz, is_mask=is_mask)
+    im_patch, _ = sample_patch(im, pos, scale*image_sz, image_sz/8, is_mask=is_mask)
 
     # Apply transforms
     im_patches = torch.cat([T(im_patch, is_mask=is_mask) for T in transforms])
@@ -99,10 +98,14 @@ def sample_patch(im: torch.Tensor, pos: torch.Tensor, sample_sz: torch.Tensor, o
     # Do downsampling
     if df > 1:
         os = posl % df              # offset
-        posl = (posl - os) / df     # new position
-        im2 = im[..., os[0].item()::df, os[1].item()::df]   # downsample
+        posl = (posl - os) // df     # new position
+        #im2 = im[..., os[0].item()::df, os[1].item()::df]   # downsample
+        im2 = im[..., 0::df, 0::df]   # downsample
     else:
         im2 = im
+    
+    plt.imshow(im2[0].permute(1, 2, 0).int())
+    plt.show()
 
     # compute size to crop
     szl = torch.max(sz.round(), torch.Tensor([2])).long()
