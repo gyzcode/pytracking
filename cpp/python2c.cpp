@@ -64,15 +64,20 @@ void sample_patch(torch::Tensor im, Tensor pos, Tensor sample_sz, optional<torch
         posl = floor_divide(posl - os, df);     // new position
         cout << posl << endl;
         //im2 = im.index({"...", Slice(os[0].item<int>(), None, df), Slice(os[1].item<int>(), None, df)});
-        im2 = im.index({"...", Slice(os[1].item<int>(), None, df)});
+        cout << im.sizes() << endl;
+        cout << im.type() << endl;
+        im2 = im.index({"...", Slice(None, None, 3), Slice(None, None, 3)});
+        cout << im2.sizes() << endl;
+        cout << im2.type() << endl;
     }
     else {
         im2 = im;
     }
 
-    int rows = im.sizes()[2];
-    int cols = im.sizes()[3];
-    Mat imgshow(Size(cols, rows), CV_8UC3, im.squeeze().permute({1, 2, 0}).data_ptr<uchar>());
+    int rows = im2.sizes()[2];
+    int cols = im2.sizes()[3];
+    im2 = im2.squeeze().permute({1, 2, 0}).contiguous();
+    Mat imgshow(Size(cols, rows), CV_8UC3, im2.data_ptr<uchar>());
     imshow("test", imgshow);
     waitKey();
         
