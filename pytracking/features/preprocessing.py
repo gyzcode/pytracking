@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-
+import matplotlib.pyplot as plt
 
 def numpy_to_torch(a: np.ndarray):
     return torch.from_numpy(a).float().permute(2, 0, 1).unsqueeze(0)
@@ -26,6 +26,8 @@ def sample_patch_transformed(im, pos, scale, image_sz, transforms, is_mask=False
 
     # Apply transforms
     im_patches = torch.cat([T(im_patch, is_mask=is_mask) for T in transforms])
+    plt.imshow(im_patches[0].permute(1, 2, 0).int())
+    plt.show()
 
     return im_patches
 
@@ -97,12 +99,14 @@ def sample_patch(im: torch.Tensor, pos: torch.Tensor, sample_sz: torch.Tensor, o
     # Do downsampling
     if df > 1:
         os = posl % df              # offset
-        posl = (posl - os) / df     # new position
+        posl = (posl - os) // df     # new position
         im2 = im[..., os[0].item()::df, os[1].item()::df]   # downsample
     else:
         im2 = im
-
+    
     # compute size to crop
+    print(torch.Tensor([2]))
+    aaa = torch.Tensor([2])
     szl = torch.max(sz.round(), torch.Tensor([2])).long()
 
     # Extract top and bottom coordinates
