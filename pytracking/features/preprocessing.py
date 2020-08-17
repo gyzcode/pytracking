@@ -26,8 +26,8 @@ def sample_patch_transformed(im, pos, scale, image_sz, transforms, is_mask=False
 
     # Apply transforms
     im_patches = torch.cat([T(im_patch, is_mask=is_mask) for T in transforms])
-    plt.imshow(im_patches[0].permute(1, 2, 0).int())
-    plt.show()
+    # plt.imshow(im_patches[0].permute(1, 2, 0).int())
+    # plt.show()
 
     return im_patches
 
@@ -105,8 +105,6 @@ def sample_patch(im: torch.Tensor, pos: torch.Tensor, sample_sz: torch.Tensor, o
         im2 = im
     
     # compute size to crop
-    print(torch.Tensor([2]))
-    aaa = torch.Tensor([2])
     szl = torch.max(sz.round(), torch.Tensor([2])).long()
 
     # Extract top and bottom coordinates

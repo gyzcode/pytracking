@@ -108,6 +108,7 @@ class DiMP(BaseTracker):
                                                                       self.target_scale * self.params.scale_factors,
                                                                       self.img_sample_sz)
         # need speed up __________________________________________________________________________________________________                                                                      
+        
         # Extract classification features
         test_x = self.get_classification_features(backbone_feat)
 
@@ -677,7 +678,11 @@ class DiMP(BaseTracker):
             init_boxes = torch.cat([init_box.view(1,4), init_boxes])
 
         # Optimize the boxes
+        torch.cuda.synchronize()
+        start1 = time.time()
         output_boxes, output_iou = self.optimize_boxes(iou_features, init_boxes)
+        torch.cuda.synchronize()
+        print(time.time() - start1)
 
         # Remove weird boxes
         output_boxes[:, 2:].clamp_(1)
@@ -741,7 +746,6 @@ class DiMP(BaseTracker):
 
             if isinstance(outputs, (list, tuple)):
                 outputs = outputs[0]
-
             outputs.backward(gradient = torch.ones_like(outputs))
 
             # Update proposal
