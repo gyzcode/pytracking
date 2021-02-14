@@ -27,6 +27,10 @@ def _save_tracker_output(seq: Sequence, tracker: Tracker, output: dict):
         exec_times = np.array(data).astype(float)
         np.savetxt(file, exec_times, delimiter='\t', fmt='%f')
 
+    def save_score_map(file, data):
+        score_map = np.array(data).astype(float)
+        np.savetxt(file, score_map, delimiter='\t', fmt='%f')
+
     def _convert_dict(input_dict):
         data_dict = {}
         for elem in input_dict:
@@ -71,6 +75,10 @@ def _save_tracker_output(seq: Sequence, tracker: Tracker, output: dict):
                 os.makedirs(segmentation_path)
             for frame_name, frame_seg in zip(frame_names, data):
                 imwrite_indexed(os.path.join(segmentation_path, '{}.png'.format(frame_name)), frame_seg)
+
+        elif key == 'score_map':
+            score_file = '{}_score_map.txt'.format(base_results_path)
+            save_score_map(score_file, data)
 
 
 def run_sequence(seq: Sequence, tracker: Tracker, debug=False, visdom_info=None):
