@@ -251,9 +251,12 @@ class DiMP(BaseTracker):
         if self.output_window is not None and self.params.get('perform_hn_without_windowing', False):
             scores_hn = scores.clone()
             scores *= self.output_window
-
-
         
+        local_max = peak_local_max(scores[0].cpu().numpy(), threshold_abs=self.params.target_not_found_threshold)
+        if len(local_max) > 0:
+            print(self.map_img(local_max))
+
+
         target_found = False
         core_mask = torch.zeros(scores.size(), dtype=scores.dtype, device=scores.device)
         core_mask[:, 8:11, 8:11] = 1
@@ -904,3 +907,12 @@ class DiMP(BaseTracker):
             self.visdom.register((image, box, self.search_area_box), 'Tracking', 1, 'Tracking')
         else:
             self.visdom.register((image, box), 'Tracking', 1, 'Tracking')
+
+    
+    def map_img(self, map_location):
+        ret = map_location - ((self.output_sz - 1) / 2).numpy()
+        ret = ret / self.output_sz
+        ret = 1 / self.target_scale * self.img_sample_sz * ret
+        ret = ret + self.pos
+
+        return ret

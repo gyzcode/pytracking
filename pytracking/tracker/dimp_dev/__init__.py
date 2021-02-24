@@ -1,4 +1,4 @@
-from .dimp_fb import DiMP
+from .dimp_dev import DiMP
 
 def get_tracker_class():
     return DiMP
