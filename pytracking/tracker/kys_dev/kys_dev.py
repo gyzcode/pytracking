@@ -11,6 +11,7 @@ from pytracking.features.preprocessing import sample_patch_multiscale, sample_pa
 from pytracking.features import augmentation
 from ltr.models.target_classifier.initializer import FilterInitializerZero
 from ltr.models.kys.utils import CenterShiftFeatures, shift_features
+import ltr.data.bounding_box_utils as bbutils
 
 
 class PrevStateHandler:
@@ -208,7 +209,7 @@ class KYS(BaseTracker):
             self.visdom.register(scores_dimp[0], 'heatmap', 2, 'Dimp')
             self.visdom.register(self.debug_info, 'info_dict', 1, 'Status')
             self.visdom.register(test_patch, 'image', 2, 'im current')
-        out = {'target_bbox': new_state.tolist(), 'score_map': scores_dimp.cpu().view(-1).tolist()}
+        out = {'target_bbox': new_state.tolist()}
 
         return out
 
@@ -632,6 +633,8 @@ class KYS(BaseTracker):
         self.iou_modulation = self.get_iou_modulation(iou_backbone_feat, target_boxes)
         self.iou_modulation = TensorList([x.detach().mean(0) for x in self.iou_modulation])
 
+        self.old_iou_modulation = self.iou_modulation.clone()
+
     def init_classifier(self, init_backbone_feat):
         # Get classification features
         x = self.get_classification_features(init_backbone_feat)
@@ -813,6 +816,60 @@ class KYS(BaseTracker):
                                     self.target_scale*(1 - self.params.target_scale_update_rate)
             else:
                 self.target_scale = new_scale
+
+        # '''
+        square_box_sz = predicted_box[2:].prod().sqrt()
+        rand_factor = square_box_sz * torch.cat([self.params.box_jitter_pos * torch.ones(2), self.params.box_jitter_sz * torch.ones(2)])
+
+        minimal_edge_size = init_box[2:].min()/3
+        rand_bb = (0.2 + 1. * torch.rand(self.params.num_init_random_boxes, 4)) * rand_factor
+        new_sz = (init_box[2:] + rand_bb[:,2:]).clamp(minimal_edge_size)
+        new_center = (init_box[:2] + init_box[2:]/2) + rand_bb[:,:2]
+        init_boxes = torch.cat([new_center - new_sz/2, new_sz], 1)
+        init_boxes = torch.cat([init_box.view(1,4), init_boxes])
+
+        output_boxes = init_boxes.view(1, -1, 4).to(self.params.device).clone()
+        sz_norm = output_boxes[:,:1,2:].clone()
+        output_boxes_rel = bbutils.rect_to_rel(output_boxes, sz_norm)
+
+        self.iou_modulation[0] = torch.autograd.Variable(self.old_iou_modulation[0].clone())
+        self.iou_modulation[1] = torch.autograd.Variable(self.old_iou_modulation[1].clone())
+
+        label = torch.zeros(1,10).cuda()
+        label[0,0] = 1.0
+        weight = torch.ones(1,10).cuda() * 0.2
+        weight[0,1] = 1.0
+        for i_ in range(1):
+            # forward pass
+            bb_init_rel = output_boxes_rel.clone().detach() 
+            self.iou_modulation[0].requires_grad = True
+            self.iou_modulation[1].requires_grad = True
+
+            bb_init = bbutils.rel_to_rect(bb_init_rel, sz_norm)
+            outputs = self.net.bb_regressor.predict_iou(self.iou_modulation, iou_features, bb_init)
+
+            diff = label - outputs
+            tmp_w = weight.clone()
+            tmp_w[0,1:][diff[0, 1:] > 0] = 0
+            outputs = (label - outputs) * (label - outputs) * tmp_w
+            
+            if isinstance(outputs, (list, tuple)):
+                outputs = outputs[0]
+
+            outputs.backward(gradient = torch.ones_like(outputs))
+
+            # Update proposal
+            self.iou_modulation[0] = self.iou_modulation[0] - 5e-3 * self.iou_modulation[0].grad
+            self.iou_modulation[1] = self.iou_modulation[1] - 5e-3 * self.iou_modulation[1].grad
+            
+            #self.iou_modulation[0].grad.data.zero_()
+            #self.iou_modulation[1].grad.data.zero_()
+            
+            output_boxes_rel.detach_()
+            self.iou_modulation[0].detach_()
+            self.iou_modulation[1].detach_()
+        # '''
+
 
     def optimize_boxes(self, iou_features, init_boxes):
         return self.optimize_boxes_default(iou_features, init_boxes)

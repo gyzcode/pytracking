@@ -532,6 +532,7 @@ class DiMP(BaseTracker):
         if torch.is_tensor(self.iou_modulation[0]):
             self.iou_modulation = TensorList([x.detach().mean(0) for x in self.iou_modulation])
 
+        self.old_iou_modulation = self.iou_modulation.clone()
 
     def init_classifier(self, init_backbone_feat):
         # Get classification features
@@ -717,7 +718,7 @@ class DiMP(BaseTracker):
         rand_factor = square_box_sz * torch.cat([self.params.box_jitter_pos * torch.ones(2), self.params.box_jitter_sz * torch.ones(2)])
 
         minimal_edge_size = init_box[2:].min()/3
-        rand_bb = (torch.rand(self.params.num_init_random_boxes, 4)) * rand_factor
+        rand_bb = (0.2 + 1. * torch.rand(self.params.num_init_random_boxes, 4)) * rand_factor
         new_sz = (init_box[2:] + rand_bb[:,2:]).clamp(minimal_edge_size)
         new_center = (init_box[:2] + init_box[2:]/2) + rand_bb[:,:2]
         init_boxes = torch.cat([new_center - new_sz/2, new_sz], 1)
@@ -727,16 +728,14 @@ class DiMP(BaseTracker):
         sz_norm = output_boxes[:,:1,2:].clone()
         output_boxes_rel = bbutils.rect_to_rel(output_boxes, sz_norm)
 
-        self.iou_modulation[0] = torch.autograd.Variable(self.iou_modulation[0].clone())
-        self.iou_modulation[1] = torch.autograd.Variable(self.iou_modulation[1].clone())
+        self.iou_modulation[0] = torch.autograd.Variable(self.old_iou_modulation[0].clone())
+        self.iou_modulation[1] = torch.autograd.Variable(self.old_iou_modulation[1].clone())
 
         label = torch.zeros(1,10).cuda()
         label[0,0] = 1.0
-        ############
-        weight = torch.ones(1,10).cuda() * 0.1
+        weight = torch.ones(1,10).cuda() * 0.2
         weight[0,1] = 1.0
-        ############
-        for i_ in range(self.params.box_refinement_iter//3):
+        for i_ in range(1):
             # forward pass
             bb_init_rel = output_boxes_rel.clone().detach() 
             self.iou_modulation[0].requires_grad = True
@@ -756,9 +755,8 @@ class DiMP(BaseTracker):
             outputs.backward(gradient = torch.ones_like(outputs))
 
             # Update proposal
-            ############
-            self.iou_modulation[0] = self.iou_modulation[0] - 1e-2 * self.iou_modulation[0].grad
-            self.iou_modulation[1] = self.iou_modulation[1] - 1e-2 * self.iou_modulation[1].grad
+            self.iou_modulation[0] = self.iou_modulation[0] - 5e-3 * self.iou_modulation[0].grad
+            self.iou_modulation[1] = self.iou_modulation[1] - 5e-3 * self.iou_modulation[1].grad
             
             #self.iou_modulation[0].grad.data.zero_()
             #self.iou_modulation[1].grad.data.zero_()
