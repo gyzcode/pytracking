@@ -15,7 +15,7 @@ from visdom import Visdom
 from pytracking.evaluation import get_dataset
 from pytracking.evaluation import Tracker
 from pytracking.analysis import calc_iou_overlap
-
+from trajectory import Trajectory
 
 class Analizer():
     def __init__(self):
@@ -23,6 +23,7 @@ class Analizer():
         self.next = False
         self.prev = False
         self.search = False
+        self.traj = Trajectory()
         
 
     def _visdom_ui_handler(self, data):
