@@ -15,7 +15,6 @@ from visdom import Visdom
 from pytracking.evaluation import get_dataset
 from pytracking.evaluation import Tracker
 from pytracking.analysis import calc_iou_overlap
-from trajectory import Trajectory
 
 class Analizer():
     def __init__(self):
@@ -23,7 +22,6 @@ class Analizer():
         self.next = False
         self.prev = False
         self.search = False
-        self.traj = Trajectory()
         
 
     def _visdom_ui_handler(self, data):
@@ -50,15 +48,7 @@ class Analizer():
         path = '/home/gyz/workzone/pytracking/pytracking/tracking_results/{}/{}_{:03d}/'.format(tracker_name, tracker_param, run_id)
 
         for seq in dataset:
-
-            # ignore = True
-
             for tracker in trackers:
-                # if ignore:
-                #     if seq.name == 'KiteSurf':
-                #         ignore = False
-                #     else:
-                #         continue
 
                 seq.ground_truth_rect = seq.ground_truth_rect.astype(int)
                 anno_bb = torch.tensor(seq.ground_truth_rect)
@@ -82,16 +72,16 @@ class Analizer():
 
                 center_gt = anno_bb[:,0:2] + anno_bb[:,2:4] / 2
 
-                kf = cv.KalmanFilter(4, 2)
-                kf.transitionMatrix = cv.setIdentity(kf.transitionMatrix)
-                kf.transitionMatrix[0, 2] = 1
-                kf.transitionMatrix[1, 3] = 1
-                kf.measurementMatrix = cv.setIdentity(kf.measurementMatrix)
-                kf.processNoiseCov = cv.setIdentity(kf.processNoiseCov, 1e-5)
-                kf.measurementNoiseCov = cv.setIdentity(kf.measurementNoiseCov, 1e-1)
-                kf.errorCovPost = cv.setIdentity(kf.errorCovPost, 1)
-                kf.statePost = np.array([center_gt[0][0], center_gt[0][1], 0, 0], dtype=np.float32)
-                # measurement = np.zeros([2, 1])
+                # kf = cv.KalmanFilter(4, 2)
+                # kf.transitionMatrix = cv.setIdentity(kf.transitionMatrix)
+                # kf.transitionMatrix[0, 2] = 1
+                # kf.transitionMatrix[1, 3] = 1
+                # kf.measurementMatrix = cv.setIdentity(kf.measurementMatrix)
+                # kf.processNoiseCov = cv.setIdentity(kf.processNoiseCov, 1e-5)
+                # kf.measurementNoiseCov = cv.setIdentity(kf.measurementNoiseCov, 1e-1)
+                # kf.errorCovPost = cv.setIdentity(kf.errorCovPost, 1)
+                # kf.statePost = np.array([center_gt[0][0], center_gt[0][1], 0, 0], dtype=np.float32)
+
 
                 idx = 0
                 while idx < len(seq.frames) - 1:
@@ -115,17 +105,17 @@ class Analizer():
                         else:
                             time.sleep(0.2)
 
-                    predicted = kf.predict()
+                    # predicted = kf.predict()
 
-                    measurement = center_gt[idx].float().numpy()
+                    # measurement = center_gt[idx].float().numpy()
 
-                    estimated = kf.correct(measurement)
+                    # estimated = kf.correct(measurement)
                     
                     if not self.search:
                         image = tracker._read_image(seq.frames[idx])
                         cv.rectangle(image, (bbox[idx][0], bbox[idx][1]), (bbox[idx][0] + bbox[idx][2], bbox[idx][1] + bbox[idx][3]), (255, 0, 0), 2)
                         cv.rectangle(image, (seq.ground_truth_rect[idx][0], seq.ground_truth_rect[idx][1]), (seq.ground_truth_rect[idx][0] + seq.ground_truth_rect[idx][2], seq.ground_truth_rect[idx][1] + seq.ground_truth_rect[idx][3]), (0, 255, 0), 2)
-                        cv.circle(image, (estimated[0], estimated[1]), 3, (0,0,255), -1)
+                        # cv.circle(image, (estimated[0], estimated[1]), 3, (0,0,255), -1)
                         viz.image(image.transpose(2, 0, 1), 'frame')
                         info_text = 'seq: {}<br>frame: {}<br>iou: {:.2f}<br>'.format(seq.name, idx, iou[idx])
                         viz.text(info_text, 'info')

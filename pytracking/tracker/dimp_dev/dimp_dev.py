@@ -12,6 +12,10 @@ import ltr.data.bounding_box_utils as bbutils
 from ltr.models.target_classifier.initializer import FilterInitializerZero
 from ltr.models.layers import activation
 from skimage.feature import peak_local_max
+from trajectory import Trajectory
+import numpy as np
+import cv2 as cv
+
 
 
 class DiMP(BaseTracker):
@@ -88,8 +92,11 @@ class DiMP(BaseTracker):
         if self.params.get('use_iou_net', True):
             self.init_iou_net(init_backbone_feat)
 
-        # Initialize disturbs
-        self.disturbs = []
+        # Initialize trajectory
+        self.traj = Trajectory()
+        self.traj.kf2d.kf.statePost = np.array([self.pos[1].item(), self.pos[0].item(), 0, 0], dtype=np.float32)
+        self.traj.bbox = torch.tensor(state).reshape(1, 4)
+        self.traj.points.append(torch.tensor(self.traj.kf2d.kf.statePost[:2]))
 
         out = {'time': time.time() - tic}
         return out
@@ -169,6 +176,11 @@ class DiMP(BaseTracker):
 
         # Compute output bounding box
         new_state = torch.cat((self.pos[[1,0]] - (self.target_sz[[1,0]]-1)/2, self.target_sz[[1,0]]))
+
+        # Update trajectory bbox
+        self.traj.bbox = torch.clone(new_state).reshape(1,4)
+        if len(self.traj.points) > 0:
+            cv.circle(image, tuple(self.traj.points[-1]), 3, (255,0,0), -1)
 
         if self.params.get('output_not_found_box', False) and flag == 'not_found':
             output_state = [-1, -1, -1, -1]
@@ -252,43 +264,49 @@ class DiMP(BaseTracker):
             scores_hn = scores.clone()
             scores *= self.output_window
         
-        local_max = peak_local_max(scores[0].cpu().numpy(), threshold_abs=self.params.target_not_found_threshold)
-        if len(local_max) > 0:
-            print(self.map_img(local_max))
 
+        # target_found = False
+        # core_mask = torch.zeros(scores.size(), dtype=scores.dtype, device=scores.device)
+        # core_mask[:, 8:11, 8:11] = 1
+        # peri_mask = 1 - core_mask
+        # core_scores = scores * core_mask
+        # peri_scores = scores * peri_mask
 
-        target_found = False
-        core_mask = torch.zeros(scores.size(), dtype=scores.dtype, device=scores.device)
-        core_mask[:, 8:11, 8:11] = 1
-        peri_mask = 1 - core_mask
-        core_scores = scores * core_mask
-        peri_scores = scores * peri_mask
+        # max_score1, max_disp1 = dcf.max2d(core_scores)
+        # if max_score1.item() >= self.params.target_not_found_threshold:
+        #     target_found = True
 
-        max_score1, max_disp1 = dcf.max2d(core_scores)
-        if max_score1.item() >= self.params.target_not_found_threshold:
-            target_found = True
-
-        local_max = peak_local_max(peri_scores[0].cpu().numpy(), threshold_abs=self.params.target_not_found_threshold)
-        for lm in local_max:
-            updated = False
-            for dt in self.disturbs:
-                if abs(lm[0]-dt['disp'][0])<2 and abs(lm[1]-dt['disp'][1])<2:
-                    dt['disp'] = lm
-                    dt['updated'] = True
-                    updated = True
-            if not updated:
-                if not target_found:
-                    target_found = True
-                    max_score1 = scores[:, lm[0], lm[1]]
-                    max_disp1 = torch.from_numpy(lm.reshape(1,-1)).cuda()
-                else:
-                    self.disturbs.append({'disp': lm, 'updated': True})
+        # local_max = peak_local_max(peri_scores[0].cpu().numpy(), threshold_abs=self.params.target_not_found_threshold)
+        # for lm in local_max:
+        #     updated = False
+        #     for dt in self.disturbs:
+        #         if abs(lm[0]-dt['disp'][0])<2 and abs(lm[1]-dt['disp'][1])<2:
+        #             dt['disp'] = lm
+        #             dt['updated'] = True
+        #             updated = True
+        #     if not updated:
+        #         if not target_found:
+        #             target_found = True
+        #             max_score1 = scores[:, lm[0], lm[1]]
+        #             max_disp1 = torch.from_numpy(lm.reshape(1,-1)).cuda()
+        #         else:
+        #             self.disturbs.append({'disp': lm, 'updated': True})
     
-        self.disturbs = [x for x in self.disturbs if x['updated']==True]
-        for dt in self.disturbs:
-            dt['updated'] = False
+        # self.disturbs = [x for x in self.disturbs if x['updated']==True]
+        # for dt in self.disturbs:
+        #     dt['updated'] = False
 
-        print(self.disturbs)
+        # print(self.disturbs)
+
+
+        max_score1, max_disp1 = dcf.max2d(scores)
+
+
+
+        local_max = peak_local_max(scores[0].cpu().numpy(), threshold_abs=self.params.target_not_found_threshold)
+        nearest = self.traj.update(self.map_img(local_max))
+        if len(local_max) > 1:
+            max_disp1 = torch.tensor(local_max[nearest]).reshape(1,2)
 
 
 
@@ -300,7 +318,7 @@ class DiMP(BaseTracker):
         target_disp1 = max_disp1 - score_center
         translation_vec1 = target_disp1 * (self.img_support_sz / output_sz) * sample_scale
 
-        if not target_found:
+        if max_score1.item() < self.params.target_not_found_threshold:
             return translation_vec1, scale_ind, scores_hn, 'not_found'
         if max_score1.item() < self.params.get('uncertain_threshold', -float('inf')):
             return translation_vec1, scale_ind, scores_hn, 'uncertain'
@@ -914,5 +932,7 @@ class DiMP(BaseTracker):
         ret = ret / self.output_sz
         ret = 1 / self.target_scale * self.img_sample_sz * ret
         ret = ret + self.pos
+        ret = ret.float().numpy()
+        ret = ret[:, [1,0]]
 
         return ret

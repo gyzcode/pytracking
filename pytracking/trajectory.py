@@ -2,7 +2,20 @@
 Created on Feb 25, 2021
 @author: Yuzhang Gu
 '''
+
+import os
+import sys
+
+from numpy.core.numerictypes import maximum_sctype
+
+env_path = os.path.join(os.path.dirname(__file__), '..')
+if env_path not in sys.path:
+    sys.path.append(env_path)
+
 from kalman2d import Kalman2D
+import torch
+import copy
+from pytracking.analysis import calc_iou_overlap
 
 class Trajectory:
     """A class implementing one trajectory"""
@@ -21,36 +34,48 @@ class Trajectory:
         self.bbox = []
         self.predicted_count = 0
         self.kf2d = Kalman2D()
+        self.flag = ''
 
-    def update(self, points, bbox):
+    def update(self, points):
+        nearest = 0
         num = len(points)
         if num == 0:
-            self.kf2d.update()
-            self.points.append(self.kf2d.getPrediction())
+            self.kf2d.update1()
+            self.points.append(torch.tensor(self.kf2d.getPrediction()))
             self.predicted_count = self.predicted_count + 1
+            self.flag = 'predicted'
         elif num == 1:
-            self.kf2d.update(points[0], points[1])
-            self.points.append(self.kf2d.getEstimate())
+            self.kf2d.update(points[0])
+            self.points.append(torch.tensor(self.kf2d.getEstimate()))
             self.predicted_count = 0
+            self.flag = 'normal'
         elif num > 1:
-            max_iou = 0
-            max_iou_p = None
+            min_dist = 1e5
+            min_dist_p = None
+            i = 0
             for p in points:
-                iou = 0 #待计算
-                if max_iou < iou:
-                    max_iou = iou
-                    max_iou_p = p
-            if max_iou > Trajectory.iou_threshod:
-                self.kf2d.update(max_iou_p)
-                self.points.append(max_iou_p)
+                delta = torch.tensor(p) - torch.tensor(self.points[-1])
+                dist = torch.norm(delta)
+                if min_dist > dist:
+                    min_dist = dist
+                    min_dist_p = p
+                    nearest = i
+                i = i+1
+            if min_dist < torch.max(self.bbox[-2:]):
+                self.kf2d.update(min_dist_p)
+                self.points.append(torch.tensor(self.kf2d.getEstimate()))
                 self.predicted_count = 0
+                self.flag = 'normal'
             else:
-                self.kf2d.update()
-                self.points.append(self.kf2d.getPrediction())
+                self.kf2d.update1()
+                self.points.append(torch.tensor(self.kf2d.getPrediction()))
                 self.predicted_count = self.predicted_count + 1
+                self.flag = 'predicted'
 
         if self.predicted_count > Trajectory.predicted_max:
             self.reset()
+
+        return nearest
 
     def getPoints(self):
         return self.points

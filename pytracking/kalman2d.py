@@ -12,7 +12,7 @@ class Kalman2D(object):
     A class for 2D Kalman filtering
     '''
  
-    def __init__(self, processNoiseCov=1e-4, measurementNoiseCov=1e-1, errorCovPost=0.1):
+    def __init__(self, processNoiseCov=1e-5, measurementNoiseCov=1, errorCovPost=1):
         '''
         Constructs a new Kalman2D object.  
         For explanation of the error covariances see
@@ -38,19 +38,19 @@ class Kalman2D(object):
         self.kf.errorCovPost = cv.setIdentity(self.kf.errorCovPost, errorCovPost)
  
         self.predicted = None
-        self.esitmated = None
+        self.estimated = None
  
-    def update(self, x, y):
+    def update(self, point):
         '''
         Updates the filter with a new X,Y measurement
         '''
  
-        self.measurement = [x, y]
+        self.measurement = point
 
         self.predicted = self.kf.predict()
         self.estimated = self.kf.correct(self.measurement)
 
-    def update(self):
+    def update1(self):
         '''
         Updates the filter without any measurement
         '''
@@ -63,11 +63,11 @@ class Kalman2D(object):
         Returns the current X,Y estimate.
         '''
  
-        return self.estimated[0,0], self.estimated[1,0]
+        return self.estimated[0:2]
  
     def getPrediction(self):
         '''
         Returns the current X,Y prediction.
         '''
  
-        return self.predicted[0,0], self.predicted[1,0]
+        return [self.predicted[0,0], self.predicted[1,0]]
