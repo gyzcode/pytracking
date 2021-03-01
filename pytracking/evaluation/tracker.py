@@ -145,6 +145,17 @@ class Tracker:
         else:
             raise ValueError('Unknown multi object mode {}'.format(multiobj_mode))
 
+
+        # Read warp matrix
+        fn = '/home/gyz/dataset/otb100/{}_warp.yml'.format(seq.name)
+        fs = cv.FileStorage(fn, cv.FileStorage_READ)
+        tracker.warp_matrix = []
+        for i in range(2, len(seq.frames)+1):
+            w = fs.getNode('warp{}'.format(i)).mat()
+            tracker.warp_matrix.append(w)
+        fs.release()
+
+
         output = self._track_sequence(tracker, seq, init_info)
         return output
 

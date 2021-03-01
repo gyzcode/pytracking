@@ -12,7 +12,7 @@ env_path = os.path.join(os.path.dirname(__file__), '..')
 if env_path not in sys.path:
     sys.path.append(env_path)
 
-from kalman2d import Kalman2D
+from pytracking.kalman2d import Kalman2D
 import torch
 import copy
 from pytracking.analysis import calc_iou_overlap
@@ -61,7 +61,7 @@ class Trajectory:
                     min_dist_p = p
                     nearest = i
                 i = i+1
-            if min_dist < torch.max(self.bbox[-2:]):
+            if min_dist < torch.max(self.bbox[:, 2:4]):
                 self.kf2d.update(min_dist_p)
                 self.points.append(torch.tensor(self.kf2d.getEstimate()))
                 self.predicted_count = 0

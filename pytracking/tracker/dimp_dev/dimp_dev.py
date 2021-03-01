@@ -12,7 +12,7 @@ import ltr.data.bounding_box_utils as bbutils
 from ltr.models.target_classifier.initializer import FilterInitializerZero
 from ltr.models.layers import activation
 from skimage.feature import peak_local_max
-from trajectory import Trajectory
+from pytracking.trajectory import Trajectory
 import numpy as np
 import cv2 as cv
 
@@ -92,11 +92,18 @@ class DiMP(BaseTracker):
         if self.params.get('use_iou_net', True):
             self.init_iou_net(init_backbone_feat)
 
-        # Initialize trajectory
-        self.traj = Trajectory()
-        self.traj.kf2d.kf.statePost = np.array([self.pos[1].item(), self.pos[0].item(), 0, 0], dtype=np.float32)
-        self.traj.bbox = torch.tensor(state).reshape(1, 4)
-        self.traj.points.append(torch.tensor(self.traj.kf2d.kf.statePost[:2]))
+        # # Initialize trajectory
+        # self.traj = Trajectory()
+        # self.traj.kf2d.kf.statePost = np.array([self.pos[1].item(), self.pos[0].item(), 0, 0], dtype=np.float32)
+        # self.traj.bbox = torch.tensor(state).reshape(1, 4)
+        # self.traj.points.append(torch.tensor(self.traj.kf2d.kf.statePost[:2]))
+
+        # Initialize findTransformECC
+        self.prev_frame = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
+        self.input_mask = np.ones(self.prev_frame.shape, dtype=np.uint8)
+        self.criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 50, 1e-3)
+        self.max_score = 1
+
 
         out = {'time': time.time() - tic}
         return out
@@ -110,6 +117,23 @@ class DiMP(BaseTracker):
 
         # Convert image
         im = numpy_to_torch(image)
+
+        # compensate camera movement
+        curr_frame = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
+        if self.max_score >= self.params.target_not_found_threshold:
+            # warp_matrix = None
+            # try:
+            #     cc, warp_matrix =cv.findTransformECC(self.prev_frame, curr_frame, warp_matrix, cv.MOTION_HOMOGRAPHY, self.criteria, self.input_mask, 5)
+            # except cv.error as e:
+            #     print(e)
+            # else:
+            warp_matrix = self.warp_matrix.pop(0)
+            old_pos = np.array([[[self.pos[1], self.pos[0]]]], dtype=np.float32)
+            new_pos = cv.perspectiveTransform(old_pos, warp_matrix)
+            cv.circle(image, (old_pos[0,0,0], old_pos[0,0,1]), 3, (255,0,0), -1)
+            cv.circle(image, (new_pos[0,0,0], new_pos[0,0,1]), 3, (0,255,0), -1)
+            self.pos = torch.tensor([new_pos[0,0,1], new_pos[0,0,0]])
+        self.prev_frame = curr_frame.copy()
 
         # ------- LOCALIZATION ------- #
 
@@ -164,6 +188,8 @@ class DiMP(BaseTracker):
         score_map = s[scale_ind, ...]
         max_score = torch.max(score_map).item()
 
+        self.max_score = max_score
+
         # Visualize and set debug info
         self.search_area_box = torch.cat((sample_coords[scale_ind,[1,0]], sample_coords[scale_ind,[3,2]] - sample_coords[scale_ind,[1,0]] - 1))
         self.debug_info['flag' + self.id_str] = flag
@@ -177,10 +203,10 @@ class DiMP(BaseTracker):
         # Compute output bounding box
         new_state = torch.cat((self.pos[[1,0]] - (self.target_sz[[1,0]]-1)/2, self.target_sz[[1,0]]))
 
-        # Update trajectory bbox
-        self.traj.bbox = torch.clone(new_state).reshape(1,4)
-        if len(self.traj.points) > 0:
-            cv.circle(image, tuple(self.traj.points[-1]), 3, (255,0,0), -1)
+        # # Update trajectory bbox
+        # self.traj.bbox = torch.clone(new_state).reshape(1,4)
+        # if len(self.traj.points) > 0:
+        #     cv.circle(image, tuple(self.traj.points[-1]), 3, (255,0,0), -1)
 
         if self.params.get('output_not_found_box', False) and flag == 'not_found':
             output_state = [-1, -1, -1, -1]
@@ -302,11 +328,11 @@ class DiMP(BaseTracker):
         max_score1, max_disp1 = dcf.max2d(scores)
 
 
-
-        local_max = peak_local_max(scores[0].cpu().numpy(), threshold_abs=self.params.target_not_found_threshold)
-        nearest = self.traj.update(self.map_img(local_max))
-        if len(local_max) > 1:
-            max_disp1 = torch.tensor(local_max[nearest]).reshape(1,2)
+        # thres = max(self.params.target_not_found_threshold, max_score1.cpu().item() * 0.5)
+        # local_max = peak_local_max(scores[0].cpu().numpy(), threshold_abs=thres)
+        # nearest = self.traj.update(self.map_img(local_max))
+        # if len(local_max) > 1:
+        #     max_disp1 = torch.tensor(local_max[nearest]).reshape(1,2)
 
 
 
@@ -362,7 +388,17 @@ class DiMP(BaseTracker):
         if max_score2 > self.params.hard_negative_threshold * max_score1 and max_score2 > self.params.target_not_found_threshold:
             return translation_vec1, scale_ind, scores_hn, 'hard_negative'
 
+
+
+        # if len(local_max) > 1:
+        #     return translation_vec1, scale_ind, scores_hn, 'uncertain'
+        # else:
+        #     return translation_vec1, scale_ind, scores_hn, 'normal'
+
+
+
         return translation_vec1, scale_ind, scores_hn, 'normal'
+
 
     def extract_backbone_features(self, im: torch.Tensor, pos: torch.Tensor, scales, sz: torch.Tensor):
         im_patches, patch_coords = sample_patch_multiscale(im, pos, scales, sz,
