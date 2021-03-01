@@ -99,9 +99,6 @@ class DiMP(BaseTracker):
         # self.traj.points.append(torch.tensor(self.traj.kf2d.kf.statePost[:2]))
 
         # Initialize findTransformECC
-        self.prev_frame = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
-        self.input_mask = np.ones(self.prev_frame.shape, dtype=np.uint8)
-        self.criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 50, 1e-3)
         self.max_score = 1
 
 
@@ -119,21 +116,13 @@ class DiMP(BaseTracker):
         im = numpy_to_torch(image)
 
         # compensate camera movement
-        curr_frame = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
         if self.max_score >= self.params.target_not_found_threshold:
-            # warp_matrix = None
-            # try:
-            #     cc, warp_matrix =cv.findTransformECC(self.prev_frame, curr_frame, warp_matrix, cv.MOTION_HOMOGRAPHY, self.criteria, self.input_mask, 5)
-            # except cv.error as e:
-            #     print(e)
-            # else:
             warp_matrix = self.warp_matrix.pop(0)
             old_pos = np.array([[[self.pos[1], self.pos[0]]]], dtype=np.float32)
             new_pos = cv.perspectiveTransform(old_pos, warp_matrix)
             cv.circle(image, (old_pos[0,0,0], old_pos[0,0,1]), 3, (255,0,0), -1)
             cv.circle(image, (new_pos[0,0,0], new_pos[0,0,1]), 3, (0,255,0), -1)
             self.pos = torch.tensor([new_pos[0,0,1], new_pos[0,0,0]])
-        self.prev_frame = curr_frame.copy()
 
         # ------- LOCALIZATION ------- #
 
