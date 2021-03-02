@@ -6,6 +6,7 @@ from pytracking.evaluation.environment import env_settings
 import time
 import cv2 as cv
 from pytracking.utils.visdom import Visdom
+from pytracking.utils.load_warp_matrix import load_warp_matrix
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from pytracking.utils.plotting import draw_figure, overlay_mask
@@ -146,14 +147,8 @@ class Tracker:
             raise ValueError('Unknown multi object mode {}'.format(multiobj_mode))
 
 
-        # Read warp matrix
-        fn = '/home/gyz/dataset/otb100/{}_warp.yml'.format(seq.name)
-        fs = cv.FileStorage(fn, cv.FileStorage_READ)
-        tracker.warp_matrix = []
-        for i in range(2, len(seq.frames)+1):
-            w = fs.getNode('warp{}'.format(i)).mat()
-            tracker.warp_matrix.append(w)
-        fs.release()
+        # Load warp matrix
+        tracker.warp_matrix = load_warp_matrix(seq.name, len(seq.frames)+1)
 
 
         output = self._track_sequence(tracker, seq, init_info)
