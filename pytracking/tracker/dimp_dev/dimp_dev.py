@@ -1,3 +1,4 @@
+from types import WrapperDescriptorType
 from pytracking.tracker.base import BaseTracker
 import torch
 import torch.nn.functional as F
@@ -12,11 +13,10 @@ import ltr.data.bounding_box_utils as bbutils
 from ltr.models.target_classifier.initializer import FilterInitializerZero
 from ltr.models.layers import activation
 from skimage.feature import peak_local_max
-from pytracking.trajectory import Trajectory
 import numpy as np
 import cv2 as cv
-
-
+from filterpy.kalman import KalmanFilter
+from filterpy.common import Q_discrete_white_noise
 
 class DiMP(BaseTracker):
 
@@ -92,15 +92,24 @@ class DiMP(BaseTracker):
         if self.params.get('use_iou_net', True):
             self.init_iou_net(init_backbone_feat)
 
-        # # Initialize trajectory
-        # self.traj = Trajectory()
-        # self.traj.kf2d.kf.statePost = np.array([self.pos[1].item(), self.pos[0].item(), 0, 0], dtype=np.float32)
-        # self.traj.bbox = torch.tensor(state).reshape(1, 4)
-        # self.traj.points.append(torch.tensor(self.traj.kf2d.kf.statePost[:2]))
+        # Initialize delta pos
+        self.delta_pos = []
+        self.not_found_count = 0
 
-        # Initialize findTransformECC
-        self.max_score = 1
-
+        # Initialize kalman filter
+        std_x, std_y = 3, 3
+        self.kf = KalmanFilter(4, 2)
+        self.kf.x = np.array([0., 0., 0., 0.])
+        self.kf.R = np.diag([std_x**2, std_y**2])
+        self.kf.F = np.array([[1, 0, 1, 0], 
+                        [0, 1, 0, 1],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 1]])
+        self.kf.H = np.array([[1, 0, 0, 0],
+                        [0, 1, 0, 0]])
+        # self.kf.Q[0:2, 0:2] = Q_discrete_white_noise(2, dt=1, var=0.02)
+        # self.kf.Q[2:4, 2:4] = Q_discrete_white_noise(2, dt=1, var=0.02)
+        self.kf.Q = np.identity(4) * 1e-4
 
         out = {'time': time.time() - tic}
         return out
@@ -116,13 +125,19 @@ class DiMP(BaseTracker):
         im = numpy_to_torch(image)
 
         # compensate camera movement
-        if self.max_score >= self.params.target_not_found_threshold:
-            warp_matrix = self.warp_matrix.pop(0)
-            old_pos = np.array([[[self.pos[1], self.pos[0]]]], dtype=np.float32)
-            new_pos = cv.perspectiveTransform(old_pos, warp_matrix)
-            cv.circle(image, (old_pos[0,0,0], old_pos[0,0,1]), 3, (255,0,0), -1)
-            cv.circle(image, (new_pos[0,0,0], new_pos[0,0,1]), 3, (0,255,0), -1)
-            self.pos = torch.tensor([new_pos[0,0,1], new_pos[0,0,0]])
+        warp_matrix = self.warp_matrix.pop(0)
+        prev_pos = self.pos.reshape(1,1,2).numpy()
+        warp_pos = cv.perspectiveTransform(prev_pos, warp_matrix)
+        self.old_pos = torch.tensor(warp_pos).reshape(-1)
+
+        # calculate new pos as search center
+        self.pos = torch.tensor(self.kf.x[2:4]) + self.old_pos
+        search_center = self.pos.int().numpy()
+
+
+
+
+
 
         # ------- LOCALIZATION ------- #
 
@@ -142,6 +157,40 @@ class DiMP(BaseTracker):
         # Localize the target
         translation_vec, scale_ind, s, flag = self.localize_target(scores_raw, sample_pos, sample_scales)
         new_pos = sample_pos[scale_ind,:] + translation_vec
+
+
+
+
+        # calculate target displacement after camera movement compensation
+        abs_dist = new_pos - self.old_pos
+
+        # Kalman filter predict
+        self.kf.predict()
+        
+        # don't update position and scale if new pos is far away from old pos
+        if len(self.delta_pos) == 20:
+            sigma = np.std(self.delta_pos, ddof=1)
+            mean = np.mean(self.delta_pos)
+            if np.fabs(abs_dist.norm() - mean) > sigma * 6:
+                if self.not_found_count < 10:
+                    flag = 'not_found'
+                self.not_found_count = self.not_found_count + 1
+            else:
+                self.not_found_count = 0
+            if self.not_found_count == 11:
+                self.not_found_count = 0
+        print(flag)
+
+
+        if flag != 'not_found':
+            # kalman filter update
+            measurement = self.kf.x[0:2] + abs_dist.numpy()
+            self.kf.update(measurement)
+
+
+
+
+
 
         # Update position and scale
         if flag != 'not_found':
@@ -174,6 +223,19 @@ class DiMP(BaseTracker):
         if self.params.get('use_iou_net', True) and flag != 'not_found' and hasattr(self, 'pos_iounet'):
             self.pos = self.pos_iounet.clone()
 
+
+
+        # calculate delta pos
+        if flag != 'not_found':
+            self.delta_pos.append((self.pos - self.old_pos).norm())
+            if len(self.delta_pos) > 20:
+                self.delta_pos.pop(0)
+
+        cv.circle(image, (search_center[1], search_center[0]), 3, (255,0,0), -1)
+
+
+
+
         score_map = s[scale_ind, ...]
         max_score = torch.max(score_map).item()
 
@@ -191,11 +253,6 @@ class DiMP(BaseTracker):
 
         # Compute output bounding box
         new_state = torch.cat((self.pos[[1,0]] - (self.target_sz[[1,0]]-1)/2, self.target_sz[[1,0]]))
-
-        # # Update trajectory bbox
-        # self.traj.bbox = torch.clone(new_state).reshape(1,4)
-        # if len(self.traj.points) > 0:
-        #     cv.circle(image, tuple(self.traj.points[-1]), 3, (255,0,0), -1)
 
         if self.params.get('output_not_found_box', False) and flag == 'not_found':
             output_state = [-1, -1, -1, -1]
@@ -279,51 +336,19 @@ class DiMP(BaseTracker):
             scores_hn = scores.clone()
             scores *= self.output_window
         
-
-        # target_found = False
-        # core_mask = torch.zeros(scores.size(), dtype=scores.dtype, device=scores.device)
-        # core_mask[:, 8:11, 8:11] = 1
-        # peri_mask = 1 - core_mask
-        # core_scores = scores * core_mask
-        # peri_scores = scores * peri_mask
-
-        # max_score1, max_disp1 = dcf.max2d(core_scores)
-        # if max_score1.item() >= self.params.target_not_found_threshold:
-        #     target_found = True
-
-        # local_max = peak_local_max(peri_scores[0].cpu().numpy(), threshold_abs=self.params.target_not_found_threshold)
-        # for lm in local_max:
-        #     updated = False
-        #     for dt in self.disturbs:
-        #         if abs(lm[0]-dt['disp'][0])<2 and abs(lm[1]-dt['disp'][1])<2:
-        #             dt['disp'] = lm
-        #             dt['updated'] = True
-        #             updated = True
-        #     if not updated:
-        #         if not target_found:
-        #             target_found = True
-        #             max_score1 = scores[:, lm[0], lm[1]]
-        #             max_disp1 = torch.from_numpy(lm.reshape(1,-1)).cuda()
-        #         else:
-        #             self.disturbs.append({'disp': lm, 'updated': True})
-    
-        # self.disturbs = [x for x in self.disturbs if x['updated']==True]
-        # for dt in self.disturbs:
-        #     dt['updated'] = False
-
-        # print(self.disturbs)
-
-
         max_score1, max_disp1 = dcf.max2d(scores)
 
 
-        # thres = max(self.params.target_not_found_threshold, max_score1.cpu().item() * 0.5)
-        # local_max = peak_local_max(scores[0].cpu().numpy(), threshold_abs=thres)
-        # nearest = self.traj.update(self.map_img(local_max))
-        # if len(local_max) > 1:
-        #     max_disp1 = torch.tensor(local_max[nearest]).reshape(1,2)
-
-
+        # find nearest local max
+        local_max = peak_local_max(scores[0].cpu().numpy(), threshold_abs=self.params.target_not_found_threshold)
+        min_dist = 1e5
+        for lm in local_max:
+            delta = lm - score_center.numpy()
+            dist = np.linalg.norm(delta)
+            if min_dist > dist:
+                min_dist = dist
+                max_disp1 = torch.tensor(lm).reshape(1,2).cuda()
+                max_score1 = scores[:, max_disp1[0,0], max_disp1[0,1]]
 
         
         _, scale_ind = torch.max(max_score1, dim=0)
@@ -340,49 +365,43 @@ class DiMP(BaseTracker):
         if max_score1.item() < self.params.get('hard_sample_threshold', -float('inf')):
             return translation_vec1, scale_ind, scores_hn, 'hard_negative'
 
-        # Mask out target neighborhood
-        target_neigh_sz = self.params.target_neighborhood_scale * (self.target_sz / sample_scale) * (output_sz / self.img_support_sz)
+        # # Mask out target neighborhood
+        # target_neigh_sz = self.params.target_neighborhood_scale * (self.target_sz / sample_scale) * (output_sz / self.img_support_sz)
 
-        tneigh_top = max(round(max_disp1[0].item() - target_neigh_sz[0].item() / 2), 0)
-        tneigh_bottom = min(round(max_disp1[0].item() + target_neigh_sz[0].item() / 2 + 1), sz[0])
-        tneigh_left = max(round(max_disp1[1].item() - target_neigh_sz[1].item() / 2), 0)
-        tneigh_right = min(round(max_disp1[1].item() + target_neigh_sz[1].item() / 2 + 1), sz[1])
-        scores_masked = scores_hn[scale_ind:scale_ind + 1, ...].clone()
-        scores_masked[...,tneigh_top:tneigh_bottom,tneigh_left:tneigh_right] = 0
+        # tneigh_top = max(round(max_disp1[0].item() - target_neigh_sz[0].item() / 2), 0)
+        # tneigh_bottom = min(round(max_disp1[0].item() + target_neigh_sz[0].item() / 2 + 1), sz[0])
+        # tneigh_left = max(round(max_disp1[1].item() - target_neigh_sz[1].item() / 2), 0)
+        # tneigh_right = min(round(max_disp1[1].item() + target_neigh_sz[1].item() / 2 + 1), sz[1])
+        # scores_masked = scores_hn[scale_ind:scale_ind + 1, ...].clone()
+        # scores_masked[...,tneigh_top:tneigh_bottom,tneigh_left:tneigh_right] = 0
 
-        # Find new maximum
-        max_score2, max_disp2 = dcf.max2d(scores_masked)
-        max_disp2 = max_disp2.float().cpu().view(-1)
-        target_disp2 = max_disp2 - score_center
-        translation_vec2 = target_disp2 * (self.img_support_sz / output_sz) * sample_scale
+        # # Find new maximum
+        # max_score2, max_disp2 = dcf.max2d(scores_masked)
+        # max_disp2 = max_disp2.float().cpu().view(-1)
+        # target_disp2 = max_disp2 - score_center
+        # translation_vec2 = target_disp2 * (self.img_support_sz / output_sz) * sample_scale
 
-        prev_target_vec = (self.pos - sample_pos[scale_ind,:]) / ((self.img_support_sz / output_sz) * sample_scale)
+        # prev_target_vec = (self.pos - sample_pos[scale_ind,:]) / ((self.img_support_sz / output_sz) * sample_scale)
 
-        # Handle the different cases
-        if max_score2 > self.params.distractor_threshold * max_score1:
-            disp_norm1 = torch.sqrt(torch.sum((target_disp1-prev_target_vec)**2))
-            disp_norm2 = torch.sqrt(torch.sum((target_disp2-prev_target_vec)**2))
-            disp_threshold = self.params.dispalcement_scale * math.sqrt(sz[0] * sz[1]) / 2
+        # # Handle the different cases
+        # if max_score2 > self.params.distractor_threshold * max_score1:
+        #     disp_norm1 = torch.sqrt(torch.sum((target_disp1-prev_target_vec)**2))
+        #     disp_norm2 = torch.sqrt(torch.sum((target_disp2-prev_target_vec)**2))
+        #     disp_threshold = self.params.dispalcement_scale * math.sqrt(sz[0] * sz[1]) / 2
 
-            if disp_norm2 > disp_threshold and disp_norm1 < disp_threshold:
-                return translation_vec1, scale_ind, scores_hn, 'hard_negative'
-            if disp_norm2 < disp_threshold and disp_norm1 > disp_threshold:
-                return translation_vec2, scale_ind, scores_hn, 'hard_negative'
-            if disp_norm2 > disp_threshold and disp_norm1 > disp_threshold:
-                return translation_vec1, scale_ind, scores_hn, 'uncertain'
+        #     if disp_norm2 > disp_threshold and disp_norm1 < disp_threshold:
+        #         return translation_vec1, scale_ind, scores_hn, 'hard_negative'
+        #     if disp_norm2 < disp_threshold and disp_norm1 > disp_threshold:
+        #         return translation_vec2, scale_ind, scores_hn, 'hard_negative'
+        #     if disp_norm2 > disp_threshold and disp_norm1 > disp_threshold:
+        #         return translation_vec1, scale_ind, scores_hn, 'uncertain'
 
-            # If also the distractor is close, return with highest score
-            return translation_vec1, scale_ind, scores_hn, 'uncertain'
-
-        if max_score2 > self.params.hard_negative_threshold * max_score1 and max_score2 > self.params.target_not_found_threshold:
-            return translation_vec1, scale_ind, scores_hn, 'hard_negative'
-
-
-
-        # if len(local_max) > 1:
+        #     # If also the distractor is close, return with highest score
         #     return translation_vec1, scale_ind, scores_hn, 'uncertain'
-        # else:
-        #     return translation_vec1, scale_ind, scores_hn, 'normal'
+
+        # if max_score2 > self.params.hard_negative_threshold * max_score1 and max_score2 > self.params.target_not_found_threshold:
+        #     return translation_vec1, scale_ind, scores_hn, 'hard_negative'
+
 
 
 

@@ -148,7 +148,7 @@ class Tracker:
 
 
         # Load warp matrix
-        tracker.warp_matrix = load_warp_matrix(seq.name, len(seq.frames)+1)
+        tracker.warp_matrix = load_warp_matrix(seq.name)
 
 
         output = self._track_sequence(tracker, seq, init_info)
