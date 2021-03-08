@@ -1,5 +1,6 @@
 # Analize target trajectory.
 
+from math import dist
 import os
 import sys
 
@@ -12,7 +13,6 @@ import torch
 import time    
 import cv2 as cv
 import numpy as np
-from numpy import linalg as la
 from filterpy.kalman import KalmanFilter
 from filterpy.common import Q_discrete_white_noise
 from pytracking.evaluation import get_dataset
@@ -38,22 +38,20 @@ def main():
     for seq in dataset:
         
         # Initialize kalman filter
-        std_x, std_y = .3, .3
+        std_x, std_y = 0.1, 0.1
         dt = 1.0
 
-        kf = KalmanFilter(4, 2)
-        kf.x = np.array([0., 0., 0., 0.])
+        kf = KalmanFilter(2, 2)
+        kf.x = np.array([0., 0.])
         kf.R = np.diag([std_x**2, std_y**2])
-        kf.F = np.array([[1, 0, 1, 0], 
-                        [0, 1, 0, 1],
-                        [0, 0, 1, 0],
-                        [0, 0, 0, 1]])
-        kf.H = np.array([[1, 0, 0, 0],
-                        [0, 1, 0, 0]])
+        kf.F = np.array([[1, 0], 
+                        [0, 1]])
+        kf.H = np.array([[1, 0],
+                        [0, 1]])
         
-        # kf.Q[0:2, 0:2] = Q_discrete_white_noise(2, dt=1, var=0.0002)
-        # kf.Q[2:4, 2:4] = Q_discrete_white_noise(2, dt=1, var=0.0002)
-        kf.Q = np.identity(4) * 1e-4
+        # kf.Q[0:2, 0:2] = Q_discrete_white_noise(2, dt=1, var=2)
+        # kf.Q[2:4, 2:4] = Q_discrete_white_noise(2, dt=1, var=2)
+        kf.Q = np.identity(2) * 1e-4
 
         # Prepare for camera movement compensation
         warp_matrix = load_warp_matrix(seq.name)
@@ -64,51 +62,54 @@ def main():
 
         distances = []
 
-
         idx = 0
+        old_pos = gt_center[0]
+        new_pos = None
         for fn in seq.frames:
             image = cv.imread(fn)
     
             if idx > 0:
 
                 # Camera movement compensation
-                prev_pt = gt_center[idx-1]
+                prev_pt = old_pos
                 warp_pt = cv.perspectiveTransform(prev_pt.reshape(1,1,2), warp_matrix[idx-1]).reshape(-1)
 
-                # Background (whole image) displacement
-                bg_dist = warp_pt - prev_pt
-
                 # calculate search center
-                search_center = kf.x[2:4] + warp_pt
-
-                distance = la.norm(gt_center[idx] - search_center)
-                distances.append(distance)
-
-                # Foreground (target) displacement
-                fg_dist = gt_center[idx] - gt_center[idx-1]
-
-                # Target absolute displacement
-                abs_dist = fg_dist - bg_dist
-
+                search_center = kf.x + warp_pt
                 cv.circle(image, tuple(search_center.astype(int)), 3, (0,0,255), -1)
 
-                measurement = kf.x[0:2] + abs_dist
+                # Target absolute displacement
+                abs_dist = gt_center[idx] - search_center
+                
+                distance = np.linalg.norm(abs_dist)
+                distances.append(distance)
+                if len(distances) > 20:
+                    distances.pop(0)
+
+                cv.circle(image, tuple(gt_center[idx].reshape(-1).astype(int)), 3, (0,255,0), -1)
+
+                found = True
+                cv.imshow('test', image)
+                key = cv.waitKey()
+                if key == 27:
+                    break
+                elif key == 102:    #'f'
+                    found = False
+
+                
 
                 # Kalman filter predict and update
                 kf.predict()
                 
-                kf.update(measurement)
-                print(abs_dist)
+                if found:
+                    kf.update(abs_dist)
+                    new_pos = search_center + kf.x
+                else:
+                    new_pos = search_center
+                
+                old_pos = new_pos
+
                 print(kf.x)
-                print('----------------------')
-
-
-            cv.circle(image, tuple(gt_center[idx].reshape(-1).astype(int)), 3, (0,255,0), -1)
-
-            cv.imshow('test', image)
-            key = cv.waitKey()
-            if key == 27:
-                break
 
             idx = idx + 1
 
