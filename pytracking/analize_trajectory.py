@@ -13,12 +13,22 @@ import torch
 import time    
 import cv2 as cv
 import numpy as np
-from filterpy.kalman import KalmanFilter
+from filterpy.kalman import UnscentedKalmanFilter as UKF
 from filterpy.common import Q_discrete_white_noise
+from filterpy.kalman import MerweScaledSigmaPoints
 from pytracking.evaluation import get_dataset
 from pytracking.utils.load_warp_matrix import load_warp_matrix
 
+def f_cv(x, dt):
+    """ state transition function for a 
+    constant velocity aircraft"""
+    
+    F = np.array([[1, 0],
+                  [0, 1]])
+    return F @ x
 
+def h_cv(x):
+    return x[[0, 1]]
 
 def main():
     parser = argparse.ArgumentParser(description='Analize trajectory.')
@@ -38,20 +48,13 @@ def main():
     for seq in dataset:
         
         # Initialize kalman filter
-        std_x, std_y = 0.1, 0.1
-        dt = 1.0
-
-        kf = KalmanFilter(2, 2)
-        kf.x = np.array([0., 0.])
-        kf.R = np.diag([std_x**2, std_y**2])
-        kf.F = np.array([[1, 0], 
-                        [0, 1]])
-        kf.H = np.array([[1, 0],
-                        [0, 1]])
-        
-        # kf.Q[0:2, 0:2] = Q_discrete_white_noise(2, dt=1, var=2)
-        # kf.Q[2:4, 2:4] = Q_discrete_white_noise(2, dt=1, var=2)
-        kf.Q = np.identity(2) * 1e-4
+        dt = 1
+        sigmas = MerweScaledSigmaPoints(2, alpha=0.01, beta=2., kappa=1.)
+        ukf = UKF(dim_x=2, dim_z=2, fx=f_cv,
+                hx=h_cv, dt=dt, points=sigmas)
+        ukf.x = np.array([0., 0.])
+        ukf.R = np.diag([0.1, 0.1]) 
+        ukf.Q = np.identity(2) * 1e-4
 
         # Prepare for camera movement compensation
         warp_matrix = load_warp_matrix(seq.name)
@@ -75,7 +78,7 @@ def main():
                 warp_pt = cv.perspectiveTransform(prev_pt.reshape(1,1,2), warp_matrix[idx-1]).reshape(-1)
 
                 # calculate search center
-                search_center = kf.x + warp_pt
+                search_center = warp_pt + ukf.x
                 cv.circle(image, tuple(search_center.astype(int)), 3, (0,0,255), -1)
 
                 # Target absolute displacement
@@ -99,17 +102,17 @@ def main():
                 
 
                 # Kalman filter predict and update
-                kf.predict()
+                ukf.predict()
                 
                 if found:
-                    kf.update(abs_dist)
-                    new_pos = search_center + kf.x
+                    ukf.update(abs_dist)
+                    new_pos = search_center + ukf.x
                 else:
                     new_pos = search_center
                 
                 old_pos = new_pos
 
-                print(kf.x)
+                print(ukf.x)
 
             idx = idx + 1
 

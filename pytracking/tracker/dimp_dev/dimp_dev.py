@@ -97,7 +97,7 @@ class DiMP(BaseTracker):
         self.not_found_count = 0
 
         # Initialize kalman filter
-        std_x, std_y = 3, 3
+        std_x, std_y = 1, 1
         self.kf = KalmanFilter(4, 2)
         self.kf.x = np.array([0., 0., 0., 0.])
         self.kf.R = np.diag([std_x**2, std_y**2])
@@ -163,6 +163,7 @@ class DiMP(BaseTracker):
 
         # calculate target displacement after camera movement compensation
         abs_dist = new_pos - self.old_pos
+        print(abs_dist)
 
         # Kalman filter predict
         self.kf.predict()
@@ -171,9 +172,9 @@ class DiMP(BaseTracker):
         if len(self.delta_pos) == 20:
             sigma = np.std(self.delta_pos, ddof=1)
             mean = np.mean(self.delta_pos)
-            if np.fabs(abs_dist.norm() - mean) > sigma * 6:
-                if self.not_found_count < 10:
-                    flag = 'not_found'
+            if np.fabs(abs_dist.norm() - mean) > sigma * 15:
+                # if self.not_found_count < 10:
+                flag = 'not_found'
                 self.not_found_count = self.not_found_count + 1
             else:
                 self.not_found_count = 0
@@ -187,7 +188,7 @@ class DiMP(BaseTracker):
             measurement = self.kf.x[0:2] + abs_dist.numpy()
             self.kf.update(measurement)
 
-
+        print(self.kf.x)
 
 
 
@@ -339,8 +340,10 @@ class DiMP(BaseTracker):
         max_score1, max_disp1 = dcf.max2d(scores)
 
 
+
         # find nearest local max
         local_max = peak_local_max(scores[0].cpu().numpy(), threshold_abs=self.params.target_not_found_threshold)
+        # print('local max num: ', len(local_max))
         min_dist = 1e5
         for lm in local_max:
             delta = lm - score_center.numpy()
@@ -349,6 +352,7 @@ class DiMP(BaseTracker):
                 min_dist = dist
                 max_disp1 = torch.tensor(lm).reshape(1,2).cuda()
                 max_score1 = scores[:, max_disp1[0,0], max_disp1[0,1]]
+
 
         
         _, scale_ind = torch.max(max_score1, dim=0)
