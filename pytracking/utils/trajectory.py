@@ -24,17 +24,24 @@ class Trajectory:
     predicted_max = 10
     iou_threshod = 0.1
 
-    def __init__(self):
+    def __init__(self, pos):
         self.id = Trajectory.globID
         Trajectory.globID += 1
-        self.reset()
 
-    def reset(self):
         self.points = []
         self.bbox = []
         self.predicted_count = 0
         self.kf2d = Kalman2D()
         self.flag = ''
+
+        self.pos = pos
+        self.old_pos = None
+        self.delta = []
+        self.dist = []
+        self.delta_mean = 0
+        self.delta_stdev = 0
+        self.updated = False
+
 
     def update(self, points):
         nearest = 0

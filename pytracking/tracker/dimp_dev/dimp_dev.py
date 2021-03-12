@@ -1,4 +1,6 @@
 from types import WrapperDescriptorType
+
+from numpy.core.fromnumeric import mean
 from pytracking.tracker.base import BaseTracker
 import torch
 import torch.nn.functional as F
@@ -7,6 +9,7 @@ import time
 from pytracking import dcf, TensorList
 from pytracking.features.preprocessing import numpy_to_torch
 from pytracking.utils.plotting import show_tensor, plot_graph
+from pytracking.utils.trajectory import Trajectory
 from pytracking.features.preprocessing import sample_patch_multiscale, sample_patch_transformed
 from pytracking.features import augmentation
 import ltr.data.bounding_box_utils as bbutils
@@ -111,6 +114,11 @@ class DiMP(BaseTracker):
         # self.kf.Q[2:4, 2:4] = Q_discrete_white_noise(2, dt=1, var=0.02)
         self.kf.Q = np.identity(4) * 1e-4
 
+        # Initialize trajctory
+        self.trajs = []
+        traj = Trajectory(self.pos)
+        self.trajs.append(traj)
+
         out = {'time': time.time() - tic}
         return out
 
@@ -124,15 +132,20 @@ class DiMP(BaseTracker):
         # Convert image
         im = numpy_to_torch(image)
 
+
+
+
+
         # compensate camera movement
         warp_matrix = self.warp_matrix.pop(0)
-        prev_pos = self.pos.reshape(1,1,2).numpy()
-        warp_pos = cv.perspectiveTransform(prev_pos, warp_matrix)
-        self.old_pos = torch.tensor(warp_pos).reshape(-1)
+        for traj in self.trajs:
+            prev_pos = traj.pos.reshape(1,1,2).numpy()
+            warp_pos = cv.perspectiveTransform(prev_pos, warp_matrix)
+            traj.old_pos = torch.tensor(warp_pos).reshape(-1)
 
         # calculate new pos as search center
-        self.pos = torch.tensor(self.kf.x[2:4]) + self.old_pos
-        search_center = self.pos.int().numpy()
+        self.pos = self.trajs[0].old_pos.clone()
+        search_center = (self.pos.int()[1].item(), self.pos.int()[0].item())
 
 
 
@@ -156,39 +169,77 @@ class DiMP(BaseTracker):
 
         # Localize the target
         translation_vec, scale_ind, s, flag = self.localize_target(scores_raw, sample_pos, sample_scales)
-        new_pos = sample_pos[scale_ind,:] + translation_vec
 
 
 
 
-        # calculate target displacement after camera movement compensation
-        abs_dist = new_pos - self.old_pos
-        print(abs_dist)
+        # Create a distance array associated with index
+        deltas = []
+        new_poses = []
+        for i in range(len(translation_vec)):
+            new_pos = (sample_pos[scale_ind,:] + translation_vec[i]).reshape(-1)
+            new_poses.append(new_pos)
+            for j in range(len(self.trajs)):
+                dist = (new_pos - self.trajs[j].old_pos)
+                delta = dist.norm()
+                deltas.append([delta, i, j, dist[0], dist[1]])
+        deltas = np.array(deltas).reshape(-1,5)
 
-        # Kalman filter predict
-        self.kf.predict()
-        
-        # don't update position and scale if new pos is far away from old pos
-        if len(self.delta_pos) == 20:
-            sigma = np.std(self.delta_pos, ddof=1)
-            mean = np.mean(self.delta_pos)
-            if np.fabs(abs_dist.norm() - mean) > sigma * 15:
-                # if self.not_found_count < 10:
-                flag = 'not_found'
-                self.not_found_count = self.not_found_count + 1
-            else:
-                self.not_found_count = 0
-            if self.not_found_count == 11:
-                self.not_found_count = 0
+        # Sort arrcording to delta
+        deltas = deltas[np.argsort(deltas[:,0]),:]
+
+        # Reset trajs and targets updated state, pre-compute
+        for traj in self.trajs:
+            traj.updated = False
+            if len(traj.delta) >=20:
+                traj.delta_mean = np.mean(traj.delta)
+                traj.delta_stdev = np.std(traj.delta)
+        target_updated = np.zeros(len(translation_vec), int)
+
+        # Correlate trajs and targets
+        for i in range(deltas.shape[0]):
+            target_idx = int(deltas[i,1])
+            traj_idx = int(deltas[i,2])
+            if (not target_updated[target_idx]) and (not self.trajs[traj_idx].updated):
+                update_flag = True
+                if len(self.trajs[traj_idx].delta) >=20:
+                    # delta_mean = np.mean(self.trajs[traj_idx].delta)
+                    # delta_stdev = np.std(self.trajs[traj_idx].delta)
+                    if np.fabs(deltas[i,0] - self.trajs[traj_idx].delta_mean) > self.trajs[traj_idx].delta_stdev * 10:
+                        update_flag = False
+                if update_flag:
+                    self.trajs[traj_idx].pos = new_poses[target_idx]
+                    self.trajs[traj_idx].delta.append(deltas[i,0])
+                    self.trajs[traj_idx].dist.append(deltas[i,3:5])
+                    if len(self.trajs[traj_idx].delta) > 20:
+                        self.trajs[traj_idx].delta.pop(0)
+                        self.trajs[traj_idx].delta.pop(0)
+                    self.trajs[traj_idx].updated = True
+                    if traj_idx==0:
+                        flag = flag[target_idx]
+                    target_updated[target_idx] = 1
+
+        # Add new trajectory
+        for i in range(len(translation_vec)):
+            if not target_updated[i]:
+                traj = Trajectory(new_poses[i])
+                traj.updated = True
+                self.trajs.append(traj)
+
+        # Predict
+        for i in range(len(self.trajs)):
+            if not self.trajs[i].updated:
+                dist_np = np.array(self.trajs[i].dist)
+                dist_mean = np.mean(dist_np, 0).astype(np.float32)
+                self.trajs[i].pos = self.trajs[i].pos + dist_mean
+
+        # Update flag
+        if not self.trajs[0].updated:
+            flag = 'not_found'
+
+        # Update new_pos for position and scale update
+        new_pos = self.trajs[0].pos
         print(flag)
-
-
-        if flag != 'not_found':
-            # kalman filter update
-            measurement = self.kf.x[0:2] + abs_dist.numpy()
-            self.kf.update(measurement)
-
-        print(self.kf.x)
 
 
 
@@ -219,28 +270,34 @@ class DiMP(BaseTracker):
 
             # Update the classifier model
             self.update_classifier(train_x, target_box, learning_rate, s[scale_ind,...])
+            print('update')
 
         # Set the pos of the tracker to iounet pos
         if self.params.get('use_iou_net', True) and flag != 'not_found' and hasattr(self, 'pos_iounet'):
             self.pos = self.pos_iounet.clone()
 
+            # Update target trajectory pos
+            self.trajs[0].pos = self.pos
 
 
-        # calculate delta pos
-        if flag != 'not_found':
-            self.delta_pos.append((self.pos - self.old_pos).norm())
-            if len(self.delta_pos) > 20:
-                self.delta_pos.pop(0)
 
-        cv.circle(image, (search_center[1], search_center[0]), 3, (255,0,0), -1)
+
+        for i in range(len(self.trajs)):
+            pnt = (self.trajs[i].pos[1].int(), self.trajs[i].pos[0].int())
+            if i==0:
+                color = (0,255,0)
+            else:
+                color = (255,0,0)
+            cv.circle(image, pnt, 5, color, -1)
+
+
+        cv.circle(image, search_center, np.int(self.trajs[0].delta_stdev)*10, (255,0,0), 1)
 
 
 
 
         score_map = s[scale_ind, ...]
         max_score = torch.max(score_map).item()
-
-        self.max_score = max_score
 
         # Visualize and set debug info
         self.search_area_box = torch.cat((sample_coords[scale_ind,[1,0]], sample_coords[scale_ind,[3,2]] - sample_coords[scale_ind,[1,0]] - 1))
@@ -337,37 +394,51 @@ class DiMP(BaseTracker):
             scores_hn = scores.clone()
             scores *= self.output_window
         
-        max_score1, max_disp1 = dcf.max2d(scores)
+        # max_score1, max_disp1 = dcf.max2d(scores)
 
+        scale_ind = 0
+        sample_scale = sample_scales[scale_ind]
 
-
-        # find nearest local max
+        # find local max
         local_max = peak_local_max(scores[0].cpu().numpy(), threshold_abs=self.params.target_not_found_threshold)
-        # print('local max num: ', len(local_max))
-        min_dist = 1e5
+
+        translation_vec1 = []
+        flag = []
         for lm in local_max:
-            delta = lm - score_center.numpy()
-            dist = np.linalg.norm(delta)
-            if min_dist > dist:
-                min_dist = dist
-                max_disp1 = torch.tensor(lm).reshape(1,2).cuda()
-                max_score1 = scores[:, max_disp1[0,0], max_disp1[0,1]]
+            target_disp1 = torch.tensor(lm).reshape(1,2) - score_center
+            translation_vec1.append(target_disp1 * (self.img_support_sz / output_sz) * sample_scale)
+            if scores[0, lm[0], lm[1]] < 0.5:
+                flag.append('uncertain')
+            else:
+                flag.append('normal')
+
+        if len(local_max) == 0:
+            flag = 'not_found'
+
+        return translation_vec1, scale_ind, scores_hn, flag
+
+            # delta = lm - score_center.numpy()
+            # dist = np.linalg.norm(delta)
+            # if min_dist > dist:
+            #     min_dist = dist
+            #     max_disp1 = torch.tensor(lm).reshape(1,2).cuda()
+            #     max_score1 = scores[:, max_disp1[0,0], max_disp1[0,1]]
 
 
         
-        _, scale_ind = torch.max(max_score1, dim=0)
-        sample_scale = sample_scales[scale_ind]
-        max_score1 = max_score1[scale_ind]
-        max_disp1 = max_disp1[scale_ind,...].float().cpu().view(-1)
-        target_disp1 = max_disp1 - score_center
-        translation_vec1 = target_disp1 * (self.img_support_sz / output_sz) * sample_scale
+        # _, scale_ind = torch.max(max_score1, dim=0)
+        # sample_scale = sample_scales[scale_ind]
+        # max_score1 = max_score1[scale_ind]
+        # max_disp1 = max_disp1[scale_ind,...].float().cpu().view(-1)
+        # target_disp1 = max_disp1 - score_center
+        # translation_vec1 = target_disp1 * (self.img_support_sz / output_sz) * sample_scale
 
-        if max_score1.item() < self.params.target_not_found_threshold:
-            return translation_vec1, scale_ind, scores_hn, 'not_found'
-        if max_score1.item() < self.params.get('uncertain_threshold', -float('inf')):
-            return translation_vec1, scale_ind, scores_hn, 'uncertain'
-        if max_score1.item() < self.params.get('hard_sample_threshold', -float('inf')):
-            return translation_vec1, scale_ind, scores_hn, 'hard_negative'
+        # if max_score1.item() < self.params.target_not_found_threshold:
+        #     return translation_vec1, scale_ind, scores_hn, 'not_found'
+        # if max_score1.item() < self.params.get('uncertain_threshold', -float('inf')):
+        #     return translation_vec1, scale_ind, scores_hn, 'uncertain'
+        # if max_score1.item() < self.params.get('hard_sample_threshold', -float('inf')):
+        #     return translation_vec1, scale_ind, scores_hn, 'hard_negative'
 
         # # Mask out target neighborhood
         # target_neigh_sz = self.params.target_neighborhood_scale * (self.target_sz / sample_scale) * (output_sz / self.img_support_sz)
@@ -406,10 +477,6 @@ class DiMP(BaseTracker):
         # if max_score2 > self.params.hard_negative_threshold * max_score1 and max_score2 > self.params.target_not_found_threshold:
         #     return translation_vec1, scale_ind, scores_hn, 'hard_negative'
 
-
-
-
-        return translation_vec1, scale_ind, scores_hn, 'normal'
 
 
     def extract_backbone_features(self, im: torch.Tensor, pos: torch.Tensor, scales, sz: torch.Tensor):
