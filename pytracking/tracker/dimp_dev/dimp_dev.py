@@ -203,9 +203,7 @@ class DiMP(BaseTracker):
             if (not target_updated[target_idx]) and (not self.trajs[traj_idx].updated):
                 update_flag = True
                 if len(self.trajs[traj_idx].delta) >=20:
-                    # delta_mean = np.mean(self.trajs[traj_idx].delta)
-                    # delta_stdev = np.std(self.trajs[traj_idx].delta)
-                    if np.fabs(deltas[i,0] - self.trajs[traj_idx].delta_mean) > self.trajs[traj_idx].delta_stdev * 10:
+                    if np.fabs(deltas[i,0] - self.trajs[traj_idx].delta_mean) > self.trajs[traj_idx].delta_stdev * self.trajs[traj_idx].delta_stdev_scale:
                         update_flag = False
                 if update_flag:
                     self.trajs[traj_idx].pos = new_poses[target_idx]
@@ -213,7 +211,7 @@ class DiMP(BaseTracker):
                     self.trajs[traj_idx].dist.append(deltas[i,3:5])
                     if len(self.trajs[traj_idx].delta) > 20:
                         self.trajs[traj_idx].delta.pop(0)
-                        self.trajs[traj_idx].delta.pop(0)
+                        self.trajs[traj_idx].dist.pop(0)
                     self.trajs[traj_idx].updated = True
                     if traj_idx==0:
                         flag = flag[target_idx]
@@ -232,6 +230,9 @@ class DiMP(BaseTracker):
                 dist_np = np.array(self.trajs[i].dist)
                 dist_mean = np.mean(dist_np, 0).astype(np.float32)
                 self.trajs[i].pos = self.trajs[i].pos + dist_mean
+                self.trajs[i].delta_stdev_scale = self.trajs[i].delta_stdev_scale * 1.2
+            else:
+                self.trajs[i].delta_stdev_scale = 6
 
         # Update flag
         if not self.trajs[0].updated:
@@ -290,8 +291,9 @@ class DiMP(BaseTracker):
                 color = (255,0,0)
             cv.circle(image, pnt, 5, color, -1)
 
-
-        cv.circle(image, search_center, np.int(self.trajs[0].delta_stdev)*10, (255,0,0), 1)
+        radius = np.int(self.trajs[0].delta_stdev * self.trajs[0].delta_stdev_scale)
+        cv.circle(image, search_center, radius, (255,0,0), 1)
+        print('radius: ', radius)
 
 
 

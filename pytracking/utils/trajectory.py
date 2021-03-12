@@ -40,6 +40,7 @@ class Trajectory:
         self.dist = []
         self.delta_mean = 0
         self.delta_stdev = 0
+        self.delta_stdev_scale = 6
         self.updated = False
 
 
