@@ -1,6 +1,7 @@
 from types import WrapperDescriptorType
 
 from numpy.core.fromnumeric import mean
+from numpy.core.numeric import cross
 from pytracking.tracker.base import BaseTracker
 import torch
 import torch.nn.functional as F
@@ -143,6 +144,18 @@ class DiMP(BaseTracker):
             warp_pos = cv.perspectiveTransform(prev_pos, warp_matrix)
             traj.old_pos = torch.tensor(warp_pos).reshape(-1)
 
+        # calculate delta threshold
+        delta_thresh = min(self.target_sz) * 1.5
+
+        # do prediction if crossing
+        crossing = False
+        for i in range(1, len(self.trajs)):
+            disp_old_pos = np.fabs(self.trajs[i].old_pos - self.trajs[0].old_pos)
+            if disp_old_pos[0] < self.target_sz[0]/2 and disp_old_pos[1] < self.target_sz[1]/2:
+                print('corssing')
+                crossing = True
+                break
+        
         # calculate new pos as search center
         self.pos = self.trajs[0].old_pos.clone()
         search_center = (self.pos.int()[1].item(), self.pos.int()[0].item())
@@ -173,6 +186,8 @@ class DiMP(BaseTracker):
 
 
 
+        print('local max num: ', len(translation_vec))
+
         # Create a distance array associated with index
         deltas = []
         new_poses = []
@@ -191,7 +206,7 @@ class DiMP(BaseTracker):
         # Reset trajs and targets updated state, pre-compute
         for traj in self.trajs:
             traj.updated = False
-            if len(traj.delta) >=20:
+            if len(traj.delta) >=2:
                 traj.delta_mean = np.mean(traj.delta)
                 traj.delta_stdev = np.std(traj.delta)
         target_updated = np.zeros(len(translation_vec), int)
@@ -202,10 +217,11 @@ class DiMP(BaseTracker):
             traj_idx = int(deltas[i,2])
             if (not target_updated[target_idx]) and (not self.trajs[traj_idx].updated):
                 update_flag = True
-                if len(self.trajs[traj_idx].delta) >=20:
-                    if np.fabs(deltas[i,0] - self.trajs[traj_idx].delta_mean) > self.trajs[traj_idx].delta_stdev * self.trajs[traj_idx].delta_stdev_scale:
+                if len(self.trajs[traj_idx].delta) >=2:
+                    # threshold = max(10, self.trajs[traj_idx].delta_stdev * self.trajs[traj_idx].delta_stdev_scale)
+                    if np.fabs(deltas[i,0] - self.trajs[traj_idx].delta_mean) > delta_thresh * self.trajs[traj_idx].delta_stdev_scale:
                         update_flag = False
-                if update_flag:
+                if update_flag and (not crossing):
                     self.trajs[traj_idx].pos = new_poses[target_idx]
                     self.trajs[traj_idx].delta.append(deltas[i,0])
                     self.trajs[traj_idx].dist.append(deltas[i,3:5])
@@ -218,11 +234,12 @@ class DiMP(BaseTracker):
                     target_updated[target_idx] = 1
 
         # Add new trajectory
-        for i in range(len(translation_vec)):
-            if not target_updated[i]:
-                traj = Trajectory(new_poses[i])
-                traj.updated = True
-                self.trajs.append(traj)
+        if not crossing:
+            for i in range(len(translation_vec)):
+                if not target_updated[i]:
+                    traj = Trajectory(new_poses[i])
+                    traj.updated = True
+                    self.trajs.append(traj)
 
         # Predict
         for i in range(len(self.trajs)):
@@ -230,9 +247,17 @@ class DiMP(BaseTracker):
                 dist_np = np.array(self.trajs[i].dist)
                 dist_mean = np.mean(dist_np, 0).astype(np.float32)
                 self.trajs[i].pos = self.trajs[i].pos + dist_mean
-                self.trajs[i].delta_stdev_scale = self.trajs[i].delta_stdev_scale * 1.2
+                self.trajs[i].delta_stdev_scale = self.trajs[i].delta_stdev_scale * 1.02
+                self.trajs[i].predict_count = self.trajs[i].predict_count + 1
             else:
-                self.trajs[i].delta_stdev_scale = 6
+                self.trajs[i].delta_stdev_scale = 1
+                self.trajs[i].predict_count = 0
+
+        # Clear dead distractor
+        for i in range(len(self.trajs)-1, 0, -1):
+            if self.trajs[i].predict_count == 20:
+                self.trajs.pop(i)
+        print('trajs num: ', len(self.trajs))
 
         # Update flag
         if not self.trajs[0].updated:
@@ -271,17 +296,18 @@ class DiMP(BaseTracker):
 
             # Update the classifier model
             self.update_classifier(train_x, target_box, learning_rate, s[scale_ind,...])
-            print('update')
 
         # Set the pos of the tracker to iounet pos
         if self.params.get('use_iou_net', True) and flag != 'not_found' and hasattr(self, 'pos_iounet'):
             self.pos = self.pos_iounet.clone()
 
+
+
+
+
+
             # Update target trajectory pos
             self.trajs[0].pos = self.pos
-
-
-
 
         for i in range(len(self.trajs)):
             pnt = (self.trajs[i].pos[1].int(), self.trajs[i].pos[0].int())
@@ -291,7 +317,7 @@ class DiMP(BaseTracker):
                 color = (255,0,0)
             cv.circle(image, pnt, 5, color, -1)
 
-        radius = np.int(self.trajs[0].delta_stdev * self.trajs[0].delta_stdev_scale)
+        radius = max(10, np.int(delta_thresh * self.trajs[0].delta_stdev_scale))
         cv.circle(image, search_center, radius, (255,0,0), 1)
         print('radius: ', radius)
 

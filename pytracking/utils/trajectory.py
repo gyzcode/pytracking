@@ -40,8 +40,9 @@ class Trajectory:
         self.dist = []
         self.delta_mean = 0
         self.delta_stdev = 0
-        self.delta_stdev_scale = 6
+        self.delta_stdev_scale = 1
         self.updated = False
+        self.predict_count = 0
 
 
     def update(self, points):
