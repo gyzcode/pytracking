@@ -21,6 +21,46 @@ import numpy as np
 import cv2 as cv
 from filterpy.kalman import KalmanFilter
 from filterpy.common import Q_discrete_white_noise
+import itertools
+
+
+def min_dist_mtrx_idx(mtrx):
+    
+    row = mtrx.shape[0]
+    col = mtrx.shape[1]
+
+    #要求行数小于等于列数
+    trans_flag = False
+    if col<row:
+        trans_flag = True
+
+    if trans_flag:
+        mtrx = mtrx.transpose()
+
+    row = mtrx.shape[0]
+    col = mtrx.shape[1]
+    count = np.array(list(itertools.permutations(range(0, col), col))) #对列进行全排列
+    data = np.zeros(count.shape)
+    oricol = np.zeros(count.shape, int)
+    for j in range(count.shape[0]):
+        for k in range(row):
+            data[j,k] = mtrx[k, count[j,k]] #取不同行列元素
+            oricol[j,k] = count[j,k] #在原始矩阵中的列标
+
+    s = np.sum(data,1) #求和
+    result = min(s) #取最小
+    min_idx = np.argmin(s) #最小值的行标
+
+    elem_idx = np.zeros([row,2], int) #参与求和的元素的行列索引
+    for i in range(row):
+        elem_idx[i,0] = i
+        elem_idx[i,1] = oricol[min_idx,i]
+
+    if trans_flag:
+        elem_idx = elem_idx[:, [1,0]]
+
+    return elem_idx
+
 
 class DiMP(BaseTracker):
 
@@ -188,14 +228,23 @@ class DiMP(BaseTracker):
 
         print('local max num: ', len(translation_vec))
 
-        # Create a distance array associated with index
-        deltas = []
+        # Calculate new targets position 
         new_poses = []
         for i in range(len(translation_vec)):
             new_pos = (sample_pos[scale_ind,:] + translation_vec[i]).reshape(-1)
             new_poses.append(new_pos)
+
+        # Create a trajectory-target distance matrix
+        dist_mtrx = np.zeros([len(self.trajs), len(new_poses)])
+        for i in range(dist_mtrx.shape[0]):
+            for j in range(dist_mtrx.shape[1]):
+                dist_mtrx[i, j] = (self.trajs[i].old_pos - new_poses[j]).norm()
+
+        # Create a distance array associated with index
+        deltas = []
+        for i in range(len(translation_vec)):
             for j in range(len(self.trajs)):
-                dist = (new_pos - self.trajs[j].old_pos)
+                dist = (new_poses[i] - self.trajs[j].old_pos)
                 delta = dist.norm()
                 deltas.append([delta, i, j, dist[0], dist[1]])
         deltas = np.array(deltas).reshape(-1,5)
@@ -211,27 +260,46 @@ class DiMP(BaseTracker):
                 traj.delta_stdev = np.std(traj.delta)
         target_updated = np.zeros(len(translation_vec), int)
 
+        #【new algorithm】Correlate trajs and targets
+        pairs = min_dist_mtrx_idx(dist_mtrx)
+        for pair in pairs:
+            update_flag = True
+            if len(self.trajs[pair[0]].delta) >=2:
+                if np.fabs(dist_mtrx[tuple(pair)] - self.trajs[pair[0]].delta_mean) > delta_thresh * self.trajs[pair[0]].delta_stdev_scale:
+                    update_flag = False
+            if update_flag and (not crossing):
+                self.trajs[pair[0]].pos = new_poses[pair[1]]
+                self.trajs[pair[0]].delta.append(dist_mtrx[tuple(pair)])
+                self.trajs[pair[0]].dist.append(np.array(new_poses[pair[1]] - self.trajs[pair[0]].old_pos))
+                if len(self.trajs[pair[0]].delta) > 20:
+                    self.trajs[pair[0]].delta.pop(0)
+                    self.trajs[pair[0]].dist.pop(0)
+                self.trajs[pair[0]].updated = True
+                if pair[0]==0:
+                    flag = flag[pair[0]]
+                target_updated[pair[1]] = 1
+
         # Correlate trajs and targets
-        for i in range(deltas.shape[0]):
-            target_idx = int(deltas[i,1])
-            traj_idx = int(deltas[i,2])
-            if (not target_updated[target_idx]) and (not self.trajs[traj_idx].updated):
-                update_flag = True
-                if len(self.trajs[traj_idx].delta) >=2:
-                    # threshold = max(10, self.trajs[traj_idx].delta_stdev * self.trajs[traj_idx].delta_stdev_scale)
-                    if np.fabs(deltas[i,0] - self.trajs[traj_idx].delta_mean) > delta_thresh * self.trajs[traj_idx].delta_stdev_scale:
-                        update_flag = False
-                if update_flag and (not crossing):
-                    self.trajs[traj_idx].pos = new_poses[target_idx]
-                    self.trajs[traj_idx].delta.append(deltas[i,0])
-                    self.trajs[traj_idx].dist.append(deltas[i,3:5])
-                    if len(self.trajs[traj_idx].delta) > 20:
-                        self.trajs[traj_idx].delta.pop(0)
-                        self.trajs[traj_idx].dist.pop(0)
-                    self.trajs[traj_idx].updated = True
-                    if traj_idx==0:
-                        flag = flag[target_idx]
-                    target_updated[target_idx] = 1
+        # for i in range(deltas.shape[0]):
+        #     target_idx = int(deltas[i,1])
+        #     traj_idx = int(deltas[i,2])
+        #     if (not target_updated[target_idx]) and (not self.trajs[traj_idx].updated):
+        #         update_flag = True
+        #         if len(self.trajs[traj_idx].delta) >=2:
+        #             # threshold = max(10, self.trajs[traj_idx].delta_stdev * self.trajs[traj_idx].delta_stdev_scale)
+        #             if np.fabs(deltas[i,0] - self.trajs[traj_idx].delta_mean) > delta_thresh * self.trajs[traj_idx].delta_stdev_scale:
+        #                 update_flag = False
+        #         if update_flag and (not crossing):
+        #             self.trajs[traj_idx].pos = new_poses[target_idx]
+        #             self.trajs[traj_idx].delta.append(deltas[i,0])
+        #             self.trajs[traj_idx].dist.append(deltas[i,3:5])
+        #             if len(self.trajs[traj_idx].delta) > 20:
+        #                 self.trajs[traj_idx].delta.pop(0)
+        #                 self.trajs[traj_idx].dist.pop(0)
+        #             self.trajs[traj_idx].updated = True
+        #             if traj_idx==0:
+        #                 flag = flag[target_idx]
+        #             target_updated[target_idx] = 1
 
         # Add new trajectory
         if not crossing:
