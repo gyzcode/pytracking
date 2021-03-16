@@ -1,4 +1,4 @@
-from types import WrapperDescriptorType
+from types import WrapperDescriptorType, prepare_class
 
 from numpy.core.fromnumeric import mean
 from numpy.core.numeric import cross
@@ -180,9 +180,12 @@ class DiMP(BaseTracker):
         # compensate camera movement
         warp_matrix = self.warp_matrix.pop(0)
         for traj in self.trajs:
-            prev_pos = traj.pos.reshape(1,1,2).numpy()
+            prev_pos = np.array([traj.pos[1], traj.pos[0]])
+            prev_pos = prev_pos.reshape((1,1,2))
+            # prev_pos = traj.pos.reshape(1,1,2).numpy()
             warp_pos = cv.perspectiveTransform(prev_pos, warp_matrix)
-            traj.old_pos = torch.tensor(warp_pos).reshape(-1)
+            # traj.old_pos = torch.tensor(warp_pos).reshape(-1)
+            traj.old_pos = torch.tensor([warp_pos[0,0,1], warp_pos[0,0,0]])
 
         # calculate delta threshold
         delta_thresh = min(self.target_sz) * 1.5
@@ -240,17 +243,17 @@ class DiMP(BaseTracker):
             for j in range(dist_mtrx.shape[1]):
                 dist_mtrx[i, j] = (self.trajs[i].old_pos - new_poses[j]).norm()
 
-        # Create a distance array associated with index
-        deltas = []
-        for i in range(len(translation_vec)):
-            for j in range(len(self.trajs)):
-                dist = (new_poses[i] - self.trajs[j].old_pos)
-                delta = dist.norm()
-                deltas.append([delta, i, j, dist[0], dist[1]])
-        deltas = np.array(deltas).reshape(-1,5)
+        # # Create a distance array associated with index
+        # deltas = []
+        # for i in range(len(translation_vec)):
+        #     for j in range(len(self.trajs)):
+        #         dist = (new_poses[i] - self.trajs[j].old_pos)
+        #         delta = dist.norm()
+        #         deltas.append([delta, i, j, dist[0], dist[1]])
+        # deltas = np.array(deltas).reshape(-1,5)
 
-        # Sort arrcording to delta
-        deltas = deltas[np.argsort(deltas[:,0]),:]
+        # # Sort arrcording to delta
+        # deltas = deltas[np.argsort(deltas[:,0]),:]
 
         # Reset trajs and targets updated state, pre-compute
         for traj in self.trajs:
@@ -262,6 +265,7 @@ class DiMP(BaseTracker):
 
         #【new algorithm】Correlate trajs and targets
         pairs = min_dist_mtrx_idx(dist_mtrx)
+        print('pairs:', pairs)
         for pair in pairs:
             update_flag = True
             if len(self.trajs[pair[0]].delta) >=2:
@@ -278,6 +282,30 @@ class DiMP(BaseTracker):
                 if pair[0]==0:
                     flag = flag[pair[0]]
                 target_updated[pair[1]] = 1
+
+        # # Deal with fault correlation
+        # if not self.trajs[0].updated:
+        #     min_delta = 1e5
+        #     idx = 0
+        #     for pos in new_poses:
+        #         dist = self.trajs[0].old_pos - pos
+        #         delta = dist.norm()
+        #         if min_delta > delta:
+        #             min_dist = dist
+        #             min_delta = delta
+        #             min_pos = pos
+        #             min_idx = idx
+        #         idx = idx + 1
+        #     if np.fabs(min_delta - self.trajs[0].delta_mean) < delta_thresh * self.trajs[0].delta_stdev_scale:
+        #         self.trajs[0].pos = min_pos
+        #         self.trajs[0].delta.append(min_delta)
+        #         self.trajs[0].dist.append(np.array(min_dist))
+        #         if len(self.trajs[0].delta) > 20:
+        #             self.trajs[0].delta.pop(0)
+        #             self.trajs[0].dist.pop(0)
+        #         self.trajs[0].updated = True
+        #         flag = flag[0]
+        #         target_updated[min_idx] = 1
 
         # Correlate trajs and targets
         # for i in range(deltas.shape[0]):
@@ -303,19 +331,22 @@ class DiMP(BaseTracker):
 
         # Add new trajectory
         if not crossing:
-            for i in range(len(translation_vec)):
+            for i in range(len(new_poses)):
                 if not target_updated[i]:
-                    traj = Trajectory(new_poses[i])
-                    traj.updated = True
-                    self.trajs.append(traj)
+                    delta = (self.trajs[0].old_pos - new_poses[i]).norm()
+                    if np.fabs(delta - self.trajs[0].delta_mean) > delta_thresh * self.trajs[0].delta_stdev_scale:
+                        traj = Trajectory(new_poses[i])
+                        traj.updated = True
+                        self.trajs.append(traj)
 
         # Predict
         for i in range(len(self.trajs)):
             if not self.trajs[i].updated:
                 dist_np = np.array(self.trajs[i].dist)
                 dist_mean = np.mean(dist_np, 0).astype(np.float32)
-                self.trajs[i].pos = self.trajs[i].pos + dist_mean
-                self.trajs[i].delta_stdev_scale = self.trajs[i].delta_stdev_scale * 1.02
+                self.trajs[i].pos = self.trajs[i].old_pos + dist_mean
+                if self.trajs[i].delta_stdev_scale<100:
+                    self.trajs[i].delta_stdev_scale = self.trajs[i].delta_stdev_scale * 1.1
                 self.trajs[i].predict_count = self.trajs[i].predict_count + 1
             else:
                 self.trajs[i].delta_stdev_scale = 1
@@ -323,9 +354,10 @@ class DiMP(BaseTracker):
 
         # Clear dead distractor
         for i in range(len(self.trajs)-1, 0, -1):
+            print('pos:', self.trajs[i].pos)
             if self.trajs[i].predict_count == 20:
                 self.trajs.pop(i)
-        print('trajs num: ', len(self.trajs))
+        # print('trajs num: ', len(self.trajs))
 
         # Update flag
         if not self.trajs[0].updated:
@@ -333,7 +365,7 @@ class DiMP(BaseTracker):
 
         # Update new_pos for position and scale update
         new_pos = self.trajs[0].pos
-        print(flag)
+        # print(flag)
 
 
 
@@ -386,8 +418,8 @@ class DiMP(BaseTracker):
             cv.circle(image, pnt, 5, color, -1)
 
         radius = max(10, np.int(delta_thresh * self.trajs[0].delta_stdev_scale))
-        cv.circle(image, search_center, radius, (255,0,0), 1)
-        print('radius: ', radius)
+        if radius<500:
+            cv.circle(image, search_center, radius, (255,0,0), 1)
 
 
 
@@ -503,7 +535,7 @@ class DiMP(BaseTracker):
         for lm in local_max:
             target_disp1 = torch.tensor(lm).reshape(1,2) - score_center
             translation_vec1.append(target_disp1 * (self.img_support_sz / output_sz) * sample_scale)
-            if scores[0, lm[0], lm[1]] < 0.5:
+            if scores[0, lm[0], lm[1]] < 0.3:
                 flag.append('uncertain')
             else:
                 flag.append('normal')
